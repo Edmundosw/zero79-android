@@ -8,7 +8,6 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Environment;
@@ -28,13 +27,15 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
-
 public class MainActivity extends Activity {
 
-    private static final String HOME_URL = "https://zero79.netlify.app/";
+    private static final String HOME_URL =
+            "https://zero79.netlify.app/";
+
     private static final int FILE_CHOOSER_REQUEST = 1001;
 
     private WebView webView;
+
     private ValueCallback<Uri[]> filePathCallback;
 
     private boolean pdfPrinting = false;
@@ -42,33 +43,50 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+
         super.onCreate(savedInstanceState);
 
         /*
-         * Permite que o WebView seja utilizado pelo sistema de impressão
-         * sem precisar alterar manualmente o tamanho da tela.
+         * Permite ao WebView trabalhar com documentos inteiros
+         * quando necessário pelo mecanismo de impressão.
          */
         WebView.enableSlowWholeDocumentDraw();
 
+
+        /*
+         * Cria o WebView.
+         */
         webView = new WebView(this);
+
         setContentView(webView);
 
+
+        /*
+         * Configurações do WebView.
+         */
         WebSettings settings = webView.getSettings();
 
         settings.setJavaScriptEnabled(true);
+
         settings.setDomStorageEnabled(true);
+
         settings.setDatabaseEnabled(true);
 
         settings.setAllowContentAccess(true);
+
         settings.setAllowFileAccess(true);
 
         settings.setLoadsImagesAutomatically(true);
+
         settings.setMediaPlaybackRequiresUserGesture(false);
 
         settings.setUseWideViewPort(true);
+
         settings.setLoadWithOverviewMode(true);
 
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setCacheMode(
+                WebSettings.LOAD_DEFAULT
+        );
 
         settings.setMixedContentMode(
                 WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
@@ -79,6 +97,7 @@ public class MainActivity extends Activity {
          * Cookies necessários para Firebase.
          */
         CookieManager.getInstance().setAcceptCookie(true);
+
         CookieManager.getInstance().setAcceptThirdPartyCookies(
                 webView,
                 true
@@ -95,92 +114,123 @@ public class MainActivity extends Activity {
 
 
         /*
-         * Navegação.
+         * Controle de navegação.
          */
-        webView.setWebViewClient(new WebViewClient() {
+        webView.setWebViewClient(
+                new WebViewClient() {
 
-            @Override
-            public boolean shouldOverrideUrlLoading(
-                    WebView view,
-                    WebResourceRequest request
-            ) {
-                return handleUrl(request.getUrl());
-            }
+                    @Override
+                    public boolean shouldOverrideUrlLoading(
+                            WebView view,
+                            WebResourceRequest request
+                    ) {
 
-
-            @Override
-            public boolean shouldOverrideUrlLoading(
-                    WebView view,
-                    String url
-            ) {
-                return handleUrl(Uri.parse(url));
-            }
+                        return handleUrl(
+                                request.getUrl()
+                        );
+                    }
 
 
-            @Override
-            public void onPageFinished(
-                    WebView view,
-                    String url
-            ) {
-                super.onPageFinished(view, url);
+                    @Override
+                    public boolean shouldOverrideUrlLoading(
+                            WebView view,
+                            String url
+                    ) {
 
-                /*
-                 * Reinstala o botão depois que a página termina de carregar.
-                 */
-                installNativePdfButton();
-            }
-        });
+                        return handleUrl(
+                                Uri.parse(url)
+                        );
+                    }
+
+
+                    @Override
+                    public void onPageFinished(
+                            WebView view,
+                            String url
+                    ) {
+
+                        super.onPageFinished(
+                                view,
+                                url
+                        );
+
+
+                        /*
+                         * Instala novamente a interceptação
+                         * quando a página termina de carregar.
+                         */
+                        installNativePdfButton();
+                    }
+                }
+        );
 
 
         /*
          * Upload de arquivos.
          */
-        webView.setWebChromeClient(new WebChromeClient() {
+        webView.setWebChromeClient(
+                new WebChromeClient() {
 
-            @Override
-            public boolean onShowFileChooser(
-                    WebView webView,
-                    ValueCallback<Uri[]> filePathCallback,
-                    FileChooserParams fileChooserParams
-            ) {
+                    @Override
+                    public boolean onShowFileChooser(
+                            WebView webView,
+                            ValueCallback<Uri[]> filePathCallback,
+                            FileChooserParams fileChooserParams
+                    ) {
 
-                if (MainActivity.this.filePathCallback != null) {
-                    MainActivity.this.filePathCallback.onReceiveValue(null);
+                        if (
+                                MainActivity.this.filePathCallback
+                                        != null
+                        ) {
+
+                            MainActivity.this.filePathCallback
+                                    .onReceiveValue(null);
+                        }
+
+
+                        MainActivity.this.filePathCallback =
+                                filePathCallback;
+
+
+                        try {
+
+                            Intent intent =
+                                    fileChooserParams.createIntent();
+
+
+                            startActivityForResult(
+                                    intent,
+                                    FILE_CHOOSER_REQUEST
+                            );
+
+
+                            return true;
+
+
+                        } catch (
+                                ActivityNotFoundException e
+                        ) {
+
+                            MainActivity.this.filePathCallback =
+                                    null;
+
+
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Não foi possível abrir o seletor de arquivos.",
+                                    Toast.LENGTH_SHORT
+                            ).show();
+
+
+                            return false;
+                        }
+                    }
                 }
-
-                MainActivity.this.filePathCallback =
-                        filePathCallback;
-
-                try {
-
-                    Intent intent =
-                            fileChooserParams.createIntent();
-
-                    startActivityForResult(
-                            intent,
-                            FILE_CHOOSER_REQUEST
-                    );
-
-                    return true;
-
-                } catch (ActivityNotFoundException e) {
-
-                    MainActivity.this.filePathCallback = null;
-
-                    Toast.makeText(
-                            MainActivity.this,
-                            "Não foi possível abrir o seletor de arquivos.",
-                            Toast.LENGTH_SHORT
-                    ).show();
-
-                    return false;
-                }
-            }
-        });
+        );
 
 
         /*
-         * Downloads normais do site.
+         * Downloads do site.
          */
         webView.setDownloadListener(
                 new DownloadListener() {
@@ -201,30 +251,41 @@ public class MainActivity extends Activity {
                                             Uri.parse(url)
                                     );
 
-                            request.setMimeType(mimetype);
+
+                            request.setMimeType(
+                                    mimetype
+                            );
+
 
                             request.addRequestHeader(
                                     "User-Agent",
                                     userAgent
                             );
 
+
                             request.setNotificationVisibility(
                                     android.app.DownloadManager.Request
                                             .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                             );
+
 
                             request.setDestinationInExternalPublicDir(
                                     Environment.DIRECTORY_DOWNLOADS,
                                     "ZERO79_arquivo"
                             );
 
-                            android.app.DownloadManager dm =
+
+                            android.app.DownloadManager downloadManager =
                                     (android.app.DownloadManager)
                                             getSystemService(
                                                     DOWNLOAD_SERVICE
                                             );
 
-                            dm.enqueue(request);
+
+                            downloadManager.enqueue(
+                                    request
+                            );
+
 
                             Toast.makeText(
                                     MainActivity.this,
@@ -232,9 +293,12 @@ public class MainActivity extends Activity {
                                     Toast.LENGTH_SHORT
                             ).show();
 
+
                         } catch (Exception e) {
 
-                            openExternal(Uri.parse(url));
+                            openExternal(
+                                    Uri.parse(url)
+                            );
                         }
                     }
                 }
@@ -242,7 +306,7 @@ public class MainActivity extends Activity {
 
 
         /*
-         * Verifica conexão.
+         * Verifica internet.
          */
         if (!isOnline()) {
 
@@ -255,26 +319,31 @@ public class MainActivity extends Activity {
 
 
         /*
-         * Abre o ZERO79.
+         * Abre o site.
          */
         if (savedInstanceState == null) {
 
-            webView.loadUrl(HOME_URL);
+            webView.loadUrl(
+                    HOME_URL
+            );
 
         } else {
 
-            webView.restoreState(savedInstanceState);
+            webView.restoreState(
+                    savedInstanceState
+            );
         }
     }
 
 
     /**
-     * Intercepta a função original salvarPDF() do site.
+     * Intercepta o botão original "Salvar em PDF".
      *
-     * A seleção dos atletas continua sendo feita pelo próprio site.
+     * A validação dos atletas continua sendo feita pelo próprio site.
      *
-     * Não acessamos getAtletasOrdenados() diretamente porque ela está
-     * dentro do escopo do script module.
+     * Isso é importante porque getAtletasOrdenados() e
+     * getAcompanhantesOrdenados() estão dentro do escopo do
+     * script type="module" do site.
      */
     private void installNativePdfButton() {
 
@@ -284,6 +353,7 @@ public class MainActivity extends Activity {
 
 
         String js =
+
                 "javascript:(function(){" +
 
                 /*
@@ -291,72 +361,96 @@ public class MainActivity extends Activity {
                  */
                 "if(window.__zero79NativePdfInstalled)return;" +
 
+
                 /*
-                 * Verifica se o site já disponibilizou salvarPDF().
+                 * Aguarda a função original existir.
                  */
                 "if(typeof window.salvarPDF!=='function')return;" +
 
+
                 /*
-                 * Guarda as funções originais.
+                 * Guarda função original.
                  */
                 "var originalSalvarPDF=window.salvarPDF;" +
+
+
+                /*
+                 * Guarda html2pdf original.
+                 */
                 "var originalHtml2pdf=window.html2pdf;" +
 
+
                 "window.__zero79OriginalSalvarPDF=originalSalvarPDF;" +
+
                 "window.__zero79OriginalHtml2pdf=originalHtml2pdf;" +
 
 
                 /*
-                 * Substitui temporariamente salvarPDF().
+                 * Substitui temporariamente salvarPDF.
                  */
                 "window.salvarPDF=function(){" +
 
                     "try{" +
 
                         /*
-                         * Substitui html2pdf somente durante a execução
-                         * da função original.
+                         * Substitui html2pdf somente durante a
+                         * execução da função original.
                          */
                         "window.html2pdf=function(){" +
 
                             "var api={};" +
 
-                            "api.set=function(){return api;};" +
 
-                            "api.from=function(){return api;};" +
+                            "api.set=function(){" +
+                                "return api;" +
+                            "};" +
+
+
+                            "api.from=function(){" +
+                                "return api;" +
+                            "};" +
+
 
                             "api.save=function(){" +
 
                                 "if(window.AndroidPdfBridge){" +
 
                                     "window.AndroidPdfBridge.printOfficialPdf(" +
-                                    "'Liberacao_Acesso_Rio.pdf'" +
+                                        "'Liberacao_Acesso_Rio.pdf'" +
                                     ");" +
 
                                 "}else{" +
 
-                                    "alert('Ponte Android não disponível.');" +
+                                    "alert(" +
+                                        "'Ponte Android não disponível.'" +
+                                    ");" +
 
                                 "}" +
 
                                 "return api;" +
+
                             "};" +
 
+
                             "return api;" +
+
                         "};" +
 
 
                         /*
-                         * Executa a função original.
+                         * Executa a função original do site.
                          *
-                         * É ela que verifica quais atletas estão
-                         * selecionados.
+                         * Ela verifica os atletas selecionados.
                          */
                         "originalSalvarPDF();" +
 
+
                     "}catch(e){" +
 
-                        "alert('Erro ao preparar o PDF: ' + e.message);" +
+                        "alert(" +
+                            "'Erro ao preparar o PDF: ' + e.message" +
+                        ");" +
+
 
                     "}finally{" +
 
@@ -378,21 +472,23 @@ public class MainActivity extends Activity {
                 "}())";
 
 
-        webView.evaluateJavascript(js, null);
+        webView.evaluateJavascript(
+                js,
+                null
+        );
     }
 
 
-
     /**
-     * Prepara a página para impressão.
+     * Prepara o documento oficial para impressão.
      *
-     * IMPORTANTE:
+     * Não altera o tamanho físico do WebView.
      *
-     * Não fazemos webView.measure()
-     * Não fazemos webView.layout()
-     * Não alteramos o tamanho físico do WebView.
+     * Não utiliza measure().
      *
-     * Isso evita que o aplicativo fique deformado depois da impressão.
+     * Não utiliza layout().
+     *
+     * Não utiliza PdfDocument.draw().
      */
     private void preparePageForPrint(
             final String fileName
@@ -408,13 +504,20 @@ public class MainActivity extends Activity {
         }
 
 
+        /*
+         * JavaScript que prepara o documento.
+         */
         String js =
+
                 "(function(){" +
 
+
                 /*
-                 * Localiza o documento oficial.
+                 * Localiza documento oficial.
                  */
-                "var doc=document.getElementById('documento-oficial');" +
+                "var doc=document.getElementById(" +
+                    "'documento-oficial'" +
+                ");" +
 
 
                 /*
@@ -422,11 +525,13 @@ public class MainActivity extends Activity {
                  */
                 "if(!doc){" +
 
-                    "if(window.AndroidPdfBridge)" +
+                    "if(window.AndroidPdfBridge){" +
 
                         "AndroidPdfBridge.printError(" +
-                        "'Documento oficial não encontrado.'" +
+                            "'Documento oficial não encontrado.'" +
                         ");" +
+
+                    "}" +
 
                     "return false;" +
 
@@ -434,14 +539,19 @@ public class MainActivity extends Activity {
 
 
                 /*
-                 * Remove estilo anterior.
+                 * Remove CSS anterior.
                  */
-                "if(document.getElementById('zero79-print-style'))" +
-                    "document.getElementById('zero79-print-style').remove();" +
+                "var oldStyle=" +
+                    "document.getElementById(" +
+                        "'zero79-print-style'" +
+                    ");" +
+
+
+                "if(oldStyle)oldStyle.remove();" +
 
 
                 /*
-                 * Cria CSS exclusivo da impressão.
+                 * Cria novo CSS.
                  */
                 "var style=document.createElement('style');" +
 
@@ -449,28 +559,28 @@ public class MainActivity extends Activity {
 
 
                 /*
-                 * CSS do documento.
+                 * IMPORTANTE:
                  *
-                 * A4:
-                 * 210mm x 297mm
+                 * Usamos textContent em vez de uma String Java
+                 * gigante com várias concatenações de aspas.
                  *
-                 * Fonte principal:
-                 * 11px
+                 * Isso evita o erro:
                  *
-                 * Sem borda externa.
-                 * Sem sombra.
+                 * not a statement
                  */
-                "style.innerHTML=" +
+                "style.textContent=" +
 
-                    "\"@page{" +
+                    "'@page{" +
                         "size:A4 portrait;" +
                         "margin:0;" +
-                    "}\"+" +
+                    "}" +
 
-                    "\"@media print{" +
+
+                    "@media print{" +
+
 
                         /*
-                         * Página.
+                         * Corpo.
                          */
                         "html,body{" +
                             "margin:0!important;" +
@@ -485,32 +595,37 @@ public class MainActivity extends Activity {
                         "#documento-oficial{" +
 
                             "display:block!important;" +
+
                             "visibility:visible!important;" +
 
                             "width:210mm!important;" +
+
                             "max-width:210mm!important;" +
 
                             "height:297mm!important;" +
+
                             "min-height:297mm!important;" +
+
                             "max-height:297mm!important;" +
 
                             /*
-                             * Margem interna.
+                             * Margem interna da folha.
                              */
                             "padding:10mm!important;" +
 
                             "margin:0!important;" +
 
                             /*
-                             * IMPORTANTE:
-                             * retira a moldura da prévia.
+                             * Remove a moldura da prévia.
                              */
-                            "box-shadow:none!important;" +
                             "border:none!important;" +
+
+                            "box-shadow:none!important;" +
 
                             "box-sizing:border-box!important;" +
 
                             "background:#fff!important;" +
+
                             "color:#000!important;" +
 
                             "overflow:hidden!important;" +
@@ -519,7 +634,7 @@ public class MainActivity extends Activity {
 
 
                         /*
-                         * Garante que o conteúdo interno apareça.
+                         * Todo o conteúdo visível.
                          */
                         "#documento-oficial *{" +
                             "visibility:visible!important;" +
@@ -527,11 +642,18 @@ public class MainActivity extends Activity {
 
 
                         /*
-                         * Texto normal.
+                         * Texto geral.
                          */
                         "#documento-oficial p{" +
+
                             "font-size:11px!important;" +
-                            "line-height:1.25!important;" +
+
+                            "line-height:1.2!important;" +
+
+                            "margin-top:3px!important;" +
+
+                            "margin-bottom:3px!important;" +
+
                         "}" +
 
 
@@ -539,10 +661,15 @@ public class MainActivity extends Activity {
                          * Título.
                          */
                         "#documento-oficial h2{" +
+
                             "font-size:13px!important;" +
-                            "line-height:1.15!important;" +
-                            "margin-top:8px!important;" +
-                            "margin-bottom:10px!important;" +
+
+                            "line-height:1.1!important;" +
+
+                            "margin-top:6px!important;" +
+
+                            "margin-bottom:8px!important;" +
+
                         "}" +
 
 
@@ -550,38 +677,47 @@ public class MainActivity extends Activity {
                          * Tabela.
                          */
                         "#documento-oficial table{" +
+
                             "width:100%!important;" +
-                            "margin-top:10px!important;" +
+
+                            "margin-top:8px!important;" +
+
                             "border-collapse:collapse!important;" +
+
                         "}" +
 
 
                         /*
-                         * Células.
+                         * Células da tabela.
                          */
                         "#documento-oficial th," +
                         "#documento-oficial td{" +
 
-                            /*
-                             * Espaçamento menor para caber em uma página.
-                             */
-                            "padding:4px 5px!important;" +
-
                             "font-size:11px!important;" +
 
-                            "line-height:1.15!important;" +
+                            "line-height:1.1!important;" +
 
+                            "padding:3px 4px!important;" +
+
+                            /*
+                             * Mantém as linhas da tabela.
+                             */
                             "border:1px solid #000!important;" +
+
+                            "vertical-align:middle!important;" +
 
                         "}" +
 
 
                         /*
-                         * Cabeçalho da tabela.
+                         * Cabeçalho.
                          */
                         "#documento-oficial th{" +
+
                             "font-size:11px!important;" +
+
                             "font-weight:bold!important;" +
+
                         "}" +
 
 
@@ -590,11 +726,11 @@ public class MainActivity extends Activity {
                          */
                         "#documento-oficial>div:last-child{" +
 
-                            "margin-top:20px!important;" +
+                            "margin-top:15px!important;" +
 
                             "font-size:11px!important;" +
 
-                            "line-height:1.2!important;" +
+                            "line-height:1.1!important;" +
 
                         "}" +
 
@@ -608,50 +744,66 @@ public class MainActivity extends Activity {
 
                             "margin-top:0!important;" +
 
-                            "margin-bottom:2px!important;" +
+                            "margin-bottom:1px!important;" +
 
                         "}" +
 
-                    "}\";";
+
+                    "}'";
 
 
                 /*
-                 * Adiciona o CSS ao documento.
+                 * Adiciona CSS.
                  */
-                "document.head.appendChild(style);" +
+        js +=
+                ";document.head.appendChild(style);" +
 
 
                 /*
-                 * Esconde os outros elementos da página.
-                 *
-                 * Mantemos somente #documento-oficial para impressão.
+                 * Guarda elementos que serão ocultados.
                  */
                 "var hidden=[];" +
 
                 "var node=doc;" +
 
+
+                /*
+                 * Percorre os pais do documento.
+                 */
                 "while(node&&node!==document.body){" +
 
                     "var parent=node.parentElement;" +
 
                     "if(!parent)break;" +
 
+
+                    /*
+                     * Esconde os irmãos do documento.
+                     */
                     "for(var i=0;i<parent.children.length;i++){" +
 
                         "var sibling=parent.children[i];" +
 
+
                         "if(sibling!==node){" +
 
                             "hidden.push({" +
+
                                 "el:sibling," +
+
                                 "display:sibling.style.display," +
+
                                 "visibility:sibling.style.visibility" +
+
                             "});" +
+
 
                             "sibling.style.display='none';" +
 
                         "}" +
+
                     "}" +
+
 
                     "node=parent;" +
 
@@ -659,7 +811,7 @@ public class MainActivity extends Activity {
 
 
                 /*
-                 * Guarda os elementos escondidos para restaurar depois.
+                 * Guarda elementos ocultados.
                  */
                 "window.__zero79HiddenElements=hidden;" +
 
@@ -678,12 +830,14 @@ public class MainActivity extends Activity {
 
                 "return true;" +
 
+
                 "})()";
 
 
         webView.evaluateJavascript(
                 js,
                 value -> {
+
 
                     if (
                             value == null ||
@@ -699,30 +853,29 @@ public class MainActivity extends Activity {
 
 
                     /*
-                     * Pequeno intervalo para o navegador aplicar
-                     * completamente o CSS.
+                     * Aguarda o CSS ser aplicado.
                      */
                     webView.postDelayed(
-                            () -> startNativePrint(fileName),
-                            250
+                            () ->
+                                    startNativePrint(
+                                            fileName
+                                    ),
+                            300
                     );
                 }
         );
     }
 
 
-
     /**
      * Abre o mecanismo nativo de impressão do Android.
      *
-     * O Android fica responsável por:
+     * O Android será responsável por:
      *
      * - paginação
      * - A4
      * - conversão para PDF
-     * - escrita do arquivo
-     *
-     * Isso evita os problemas encontrados com html2pdf e PdfDocument.
+     * - criação do arquivo
      */
     private void startNativePrint(
             final String fileName
@@ -742,6 +895,9 @@ public class MainActivity extends Activity {
 
         try {
 
+            /*
+             * Obtém o serviço de impressão.
+             */
             PrintManager printManager =
                     (PrintManager)
                             getSystemService(
@@ -767,8 +923,10 @@ public class MainActivity extends Activity {
 
 
             /*
-             * Wrapper utilizado apenas para restaurar a página
-             * depois que o Android terminar a impressão.
+             * Adapter intermediário.
+             *
+             * Serve para restaurar a página depois que
+             * a impressão terminar.
              */
             PrintDocumentAdapter restoringAdapter =
                     new PrintDocumentAdapter() {
@@ -864,7 +1022,7 @@ public class MainActivity extends Activity {
             /*
              * Abre a tela nativa:
              *
-             * "Salvar como PDF"
+             * SALVAR COMO PDF
              */
             printManager.print(
                     fileName,
@@ -884,6 +1042,7 @@ public class MainActivity extends Activity {
 
             finishPrintPreparation();
 
+
             showPdfError(
                     "Erro ao abrir a impressão: " +
                             e.getMessage()
@@ -892,9 +1051,8 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
-     * Finaliza o processo de impressão.
+     * Finaliza o processo.
      */
     private void finishPrintPreparation() {
 
@@ -902,7 +1060,6 @@ public class MainActivity extends Activity {
 
         restorePageAfterPrint();
     }
-
 
 
     /**
@@ -923,9 +1080,8 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
-     * Restaura todos os elementos escondidos antes da impressão.
+     * Restaura a página depois da impressão.
      */
     private void restorePageAfterPrint() {
 
@@ -943,7 +1099,9 @@ public class MainActivity extends Activity {
                                     /*
                                      * Recupera elementos escondidos.
                                      */
-                                    "var h=window.__zero79HiddenElements||[];" +
+                                    "var h=" +
+                                        "window.__zero79HiddenElements||[];" +
+
 
                                     "for(var i=0;i<h.length;i++){" +
 
@@ -961,7 +1119,7 @@ public class MainActivity extends Activity {
 
 
                                     /*
-                                     * Limpa lista.
+                                     * Limpa a lista.
                                      */
                                     "window.__zero79HiddenElements=[];" +
 
@@ -973,6 +1131,7 @@ public class MainActivity extends Activity {
                                         "document.getElementById(" +
                                             "'zero79-print-style'" +
                                         ");" +
+
 
                                     "if(style)style.remove();" +
 
@@ -990,9 +1149,8 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
-     * Controle de URLs.
+     * Controle das URLs.
      */
     private boolean handleUrl(
             Uri uri
@@ -1011,21 +1169,33 @@ public class MainActivity extends Activity {
 
 
         /*
-         * URLs HTTP/HTTPS.
+         * HTTP / HTTPS.
          */
         if (
                 scheme.equals("http") ||
                 scheme.equals("https")
         ) {
 
+
             /*
-             * Mantém o ZERO79 e Firebase dentro do WebView.
+             * Sites que devem continuar no WebView.
              */
             if (
-                    host.equals("zero79.netlify.app") ||
-                    host.endsWith("firebaseapp.com") ||
-                    host.endsWith("googleapis.com") ||
-                    host.endsWith("gstatic.com")
+                    host.equals(
+                            "zero79.netlify.app"
+                    ) ||
+
+                    host.endsWith(
+                            "firebaseapp.com"
+                    ) ||
+
+                    host.endsWith(
+                            "googleapis.com"
+                    ) ||
+
+                    host.endsWith(
+                            "gstatic.com"
+                    )
             ) {
 
                 return false;
@@ -1042,7 +1212,7 @@ public class MainActivity extends Activity {
 
 
         /*
-         * Links externos.
+         * Links para aplicativos externos.
          */
         if (
                 scheme.equals("mailto") ||
@@ -1062,9 +1232,8 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
-     * Abre aplicativo externo.
+     * Abre URL externamente.
      */
     private void openExternal(
             Uri uri
@@ -1090,7 +1259,6 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
      * Verifica conexão com internet.
      */
@@ -1099,7 +1267,7 @@ public class MainActivity extends Activity {
         ConnectivityManager cm =
                 (ConnectivityManager)
                         getSystemService(
-                                ConnectivityManager.class
+                                Context.CONNECTIVITY_SERVICE
                         );
 
 
@@ -1124,11 +1292,11 @@ public class MainActivity extends Activity {
 
 
         return capabilities != null &&
+
                 capabilities.hasCapability(
                         NetworkCapabilities.NET_CAPABILITY_INTERNET
                 );
     }
-
 
 
     /**
@@ -1151,7 +1319,6 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
      * Resultado do seletor de arquivos.
      */
@@ -1170,9 +1337,12 @@ public class MainActivity extends Activity {
 
 
         if (
-                requestCode == FILE_CHOOSER_REQUEST &&
+                requestCode ==
+                        FILE_CHOOSER_REQUEST &&
+
                 filePathCallback != null
         ) {
+
 
             Uri[] results =
                     WebChromeClient.FileChooserParams.parseResult(
@@ -1189,7 +1359,6 @@ public class MainActivity extends Activity {
             filePathCallback = null;
         }
     }
-
 
 
     /**
@@ -1214,7 +1383,6 @@ public class MainActivity extends Activity {
     }
 
 
-
     /**
      * Ponte JavaScript -> Android.
      */
@@ -1228,6 +1396,7 @@ public class MainActivity extends Activity {
 
             runOnUiThread(
                     () -> {
+
 
                         if (pdfPrinting) {
 
