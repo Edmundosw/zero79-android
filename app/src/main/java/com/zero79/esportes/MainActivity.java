@@ -1,158 +1,1870 @@
 package com.zero79.esportes;
 
-import android.Manifest;
 import android.app.Activity;
-import android.app.DownloadManager;
+import android.content.ActivityNotFoundException;
+import android.content.ContentValues;
 import android.content.Context;
-import android.content.pm.PackageManager;
+import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
+import android.graphics.Color;
+import android.graphics.pdf.PdfDocument;
+import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
-import android.webkit.URLUtil;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
-import android.util.Base64;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends Activity {
 
+    private static final String HOME_URL =
+            "https://zero79.netlify.app/";
+
+    private static final int FILE_CHOOSER_REQUEST = 1001;
+
     private WebView webView;
-    private static final int STORAGE_PERMISSION_CODE = 100;
+
+    private ValueCallback<Uri[]> filePathCallback;
+
+    private File pdfTempFile;
+
+    private boolean pdfPrinting = false;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
+
+        /*
+         * Permite que o WebView seja desenhado além da área visível.
+         * Isso é importante para gerar o documento completo em PDF.
+         */
+        WebView.enableSlowWholeDocumentDraw();
+
         webView = new WebView(this);
+
         setContentView(webView);
 
-        WebSettings webSettings = webView.getSettings();
-        webSettings.setJavaScriptEnabled(true);
-        webSettings.setDomStorageEnabled(true);
-        webSettings.setDatabaseEnabled(true);
-        webSettings.setAllowFileAccess(true);
-        webSettings.setAllowContentAccess(true);
-        webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+        /*
+         * CONFIGURAÇÕES DO WEBVIEW
+         */
+
+        WebSettings settings = webView.getSettings();
+
+        settings.setJavaScriptEnabled(true);
+
+        settings.setDomStorageEnabled(true);
+
+        settings.setDatabaseEnabled(true);
+
+        settings.setAllowContentAccess(true);
+
+        settings.setAllowFileAccess(true);
+
+        settings.setLoadsImagesAutomatically(true);
+
+        settings.setMediaPlaybackRequiresUserGesture(false);
+
+        settings.setUseWideViewPort(true);
+
+        settings.setLoadWithOverviewMode(true);
+
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+        settings.setMixedContentMode(
+                WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        );
+
+
+        /*
+         * COOKIES
+         * Necessário para o Firebase continuar funcionando normalmente.
+         */
+
+        CookieManager.getInstance().setAcceptCookie(true);
+
+        CookieManager.getInstance()
+                .setAcceptThirdPartyCookies(webView, true);
+
+
+        /*
+         * PONTE JAVASCRIPT -> ANDROID
+         */
+
+        webView.addJavascriptInterface(
+                new PdfBridge(),
+                "AndroidPdfBridge"
+        );
+
+
+        /*
+         * NAVEGAÇÃO
+         */
 
         webView.setWebViewClient(new WebViewClient() {
+
             @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // Intercepta e converte links blob para download base64 se necessário
-                if (url.startsWith("blob:")) {
-                    return true;
-                }
-                view.loadUrl(url);
-                return true;
+            public boolean shouldOverrideUrlLoading(
+                    WebView view,
+                    WebResourceRequest request
+            ) {
+
+                return handleUrl(request.getUrl());
+            }
+
+
+            @Override
+            public boolean shouldOverrideUrlLoading(
+                    WebView view,
+                    String url
+            ) {
+
+                return handleUrl(Uri.parse(url));
+            }
+
+
+            @Override
+            public void onPageFinished(
+                    WebView view,
+                    String url
+            ) {
+
+                super.onPageFinished(view, url);
+
+                /*
+                 * Depois que a página terminou de carregar,
+                 * instalamos a interceptação do botão PDF.
+                 */
+                installNativePdfButton();
             }
         });
 
-        // Gerencia downloads normais e base64
-        webView.setDownloadListener(new DownloadListener() {
+
+        /*
+         * UPLOAD DE ARQUIVOS
+         */
+
+        webView.setWebChromeClient(new WebChromeClient() {
+
             @Override
-            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
-                if (url.startsWith("data:")) {
-                    baixarBase64(url, contentDisposition);
-                    return;
+            public boolean onShowFileChooser(
+                    WebView webView,
+                    ValueCallback<Uri[]> filePathCallback,
+                    FileChooserParams fileChooserParams
+            ) {
+
+                if (MainActivity.this.filePathCallback != null) {
+
+                    MainActivity.this.filePathCallback
+                            .onReceiveValue(null);
                 }
 
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                    if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                        requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, STORAGE_PERMISSION_CODE);
-                        return;
+
+                MainActivity.this.filePathCallback =
+                        filePathCallback;
+
+
+                try {
+
+                    Intent intent =
+                            fileChooserParams.createIntent();
+
+                    startActivityForResult(
+                            intent,
+                            FILE_CHOOSER_REQUEST
+                    );
+
+                    return true;
+
+                } catch (ActivityNotFoundException e) {
+
+                    MainActivity.this.filePathCallback = null;
+
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Não foi possível abrir o seletor de arquivos.",
+                            Toast.LENGTH_SHORT
+                    ).show();
+
+                    return false;
+                }
+            }
+        });
+
+
+        /*
+         * DOWNLOADS
+         */
+
+        webView.setDownloadListener(
+                new DownloadListener() {
+
+                    @Override
+                    public void onDownloadStart(
+                            String url,
+                            String userAgent,
+                            String contentDisposition,
+                            String mimetype,
+                            long contentLength
+                    ) {
+
+                        try {
+
+                            android.app.DownloadManager.Request request =
+                                    new android.app.DownloadManager.Request(
+                                            Uri.parse(url)
+                                    );
+
+
+                            request.setMimeType(mimetype);
+
+
+                            request.addRequestHeader(
+                                    "User-Agent",
+                                    userAgent
+                            );
+
+
+                            request.setNotificationVisibility(
+                                    android.app.DownloadManager.Request
+                                            .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                            );
+
+
+                            request.setDestinationInExternalPublicDir(
+                                    Environment.DIRECTORY_DOWNLOADS,
+                                    "ZERO79_arquivo"
+                            );
+
+
+                            android.app.DownloadManager dm =
+                                    (android.app.DownloadManager)
+                                            getSystemService(
+                                                    DOWNLOAD_SERVICE
+                                            );
+
+
+                            dm.enqueue(request);
+
+
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Download iniciado.",
+                                    Toast.LENGTH_SHORT
+                            ).show();
+
+
+                        } catch (Exception e) {
+
+                            openExternal(Uri.parse(url));
+                        }
                     }
                 }
-                baixarArquivo(url, contentDisposition, mimeType);
-            }
-        });
+        );
 
-        // Script injetado para forçar o html2pdf a gerar data-url em vez de blob URL no WebView do Android
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                String jsScript = "javascript:(function() {" +
-                    "var origCreateObjectURL = window.URL.createObjectURL;" +
-                    "window.URL.createObjectURL = function(blob) {" +
-                        "if (blob.type === 'application/pdf') {" +
-                            "var reader = new FileReader();" +
-                            "reader.onload = function(e) {" +
-                                "var a = document.createElement('a');" +
-                                "a.href = e.target.result;" +
-                                "a.download = 'Liberacao_Acesso_Rio.pdf';" +
-                                "document.body.appendChild(a);" +
-                                "a.click();" +
-                                "document.body.removeChild(a);" +
-                            "};" +
-                            "reader.readAsDataURL(blob);" +
-                            "return '#';" +
-                        "}" +
-                        "return origCreateObjectURL.apply(this, arguments);" +
-                    "};" +
-                "})();";
-                view.evaluateJavascript(jsScript, null);
-            }
-        });
 
-        // Carrega o site no Netlify
-        webView.loadUrl("https://zero79.netlify.app/");
-    }
+        /*
+         * VERIFICAÇÃO DE INTERNET
+         */
 
-    private void baixarBase64(String dataUrl, String contentDisposition) {
-        try {
-            String base64Data = dataUrl.substring(dataUrl.indexOf(",") + 1);
-            byte[] decodedBytes = Base64.decode(base64Data, Base64.DEFAULT);
-            
-            String fileName = "Liberacao_Acesso_Rio.pdf";
-            if (contentDisposition != null && contentDisposition.contains("filename=")) {
-                fileName = contentDisposition.replaceAll(".*filename=\"?([^\"\"]*)\"?.*", "$1");
-            }
+        if (!isOnline()) {
 
-            File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            File file = new File(dir, fileName);
-            
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(file);
-            fos.write(decodedBytes);
-            fos.close();
+            Toast.makeText(
+                    this,
+                    "Sem conexão com a internet. O ZERO79 precisa estar online para acessar o Firebase.",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
 
-            Toast.makeText(getApplicationContext(), "PDF salvo na pasta Downloads!", Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Toast.makeText(getApplicationContext(), "Erro ao salvar PDF: " + e.getMessage(), Toast.LENGTH_LONG).show();
+
+        /*
+         * CARREGA O SITE
+         */
+
+        if (savedInstanceState == null) {
+
+            webView.loadUrl(HOME_URL);
+
+        } else {
+
+            webView.restoreState(savedInstanceState);
         }
     }
 
-    private void baixarArquivo(String url, String contentDisposition, String mimeType) {
-        try {
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-            
-            request.allowScanningByMediaScanner();
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
-            
-            String cookies = CookieManager.getInstance().getCookie(url);
-            request.addRequestHeader("cookie", cookies);
-            request.addRequestHeader("User-Agent", webView.getSettings().getUserAgentString());
 
-            DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (manager != null) {
-                manager.enqueue(request);
-                Toast.makeText(getApplicationContext(), "Baixando arquivo PDF...", Toast.LENGTH_SHORT).show();
+
+    /*
+     * ============================================================
+     * INTERCEPTAÇÃO DO BOTÃO "SALVAR EM PDF"
+     * ============================================================
+     */
+
+    private void installNativePdfButton() {
+
+        if (webView == null) {
+            return;
+        }
+
+
+        /*
+         * IMPORTANTE:
+         *
+         * Não tentamos acessar diretamente:
+         *
+         * getAtletasOrdenados()
+         * getAcompanhantesOrdenados()
+         *
+         * porque essas funções pertencem ao escopo do
+         * <script type="module"> do site.
+         *
+         * A própria função original salvarPDF()
+         * continua responsável por verificar os atletas
+         * selecionados.
+         *
+         * O Android intercepta somente a geração final
+         * do html2pdf.
+         */
+
+        String js =
+                "javascript:(function(){"
+
+                        +
+
+                "if(window.__zero79NativePdfInstalled)return;"
+
+                        +
+
+                "if(typeof window.salvarPDF!=='function')return;"
+
+                        +
+
+                "var originalSalvarPDF=window.salvarPDF;"
+
+                        +
+
+                "var originalHtml2pdf=window.html2pdf;"
+
+                        +
+
+                "window.__zero79OriginalSalvarPDF=originalSalvarPDF;"
+
+                        +
+
+                "window.__zero79OriginalHtml2pdf=originalHtml2pdf;"
+
+                        +
+
+                "window.salvarPDF=function(){"
+
+                        +
+
+                    "try{"
+
+                        +
+
+                        "window.html2pdf=function(){"
+
+                            +
+
+                            "var api={};"
+
+                            +
+
+                            "api.set=function(){return api;};"
+
+                            +
+
+                            "api.from=function(){return api;};"
+
+                            +
+
+                            "api.save=function(){"
+
+                                +
+
+                                "if(window.AndroidPdfBridge){"
+
+                                    +
+
+                                    "window.AndroidPdfBridge.printOfficialPdf("
+
+                                        +
+
+                                        "'Liberacao_Acesso_Rio.pdf'"
+
+                                        +
+
+                                    ");"
+
+                                +
+
+                                "}else{"
+
+                                    +
+
+                                    "alert('Ponte Android não disponível.');"
+
+                                +
+
+                                "}"
+
+                                +
+
+                                "return api;"
+
+                            +
+
+                            "};"
+
+                            +
+
+                            "return api;"
+
+                        +
+
+                        "};"
+
+                        +
+
+                        "originalSalvarPDF();"
+
+                    +
+
+                    "}catch(e){"
+
+                        +
+
+                        "alert('Erro ao preparar o PDF: ' + e.message);"
+
+                    +
+
+                    "}finally{"
+
+                        +
+
+                        "window.html2pdf=originalHtml2pdf;"
+
+                    +
+
+                    "}"
+
+                +
+
+                "};"
+
+                        +
+
+                "window.__zero79NativePdfInstalled=true;"
+
+                        +
+
+                "}())";
+
+
+        webView.evaluateJavascript(
+                js,
+                null
+        );
+    }
+
+
+
+    /*
+     * ============================================================
+     * PREPARAÇÃO DO DOCUMENTO
+     * ============================================================
+     */
+
+    private void preparePageForPrint(
+            final String fileName
+    ) {
+
+        if (webView == null) {
+
+            showPdfError(
+                    "WebView não disponível."
+            );
+
+            return;
+        }
+
+
+        String js =
+                "(function(){"
+
+                        +
+
+                "var doc=document.getElementById('documento-oficial');"
+
+                        +
+
+                "if(!doc){"
+
+                    +
+
+                    "if(window.AndroidPdfBridge)"
+
+                        +
+
+                    "AndroidPdfBridge.printError("
+
+                        +
+
+                        "'Documento oficial não encontrado.'"
+
+                        +
+
+                    ");"
+
+                    +
+
+                    "return false;"
+
+                +
+
+                "}"
+
+                        +
+
+                "if(document.getElementById('zero79-print-style'))"
+
+                        +
+
+                "document.getElementById('zero79-print-style').remove();"
+
+                        +
+
+                "var style=document.createElement('style');"
+
+                        +
+
+                "style.id='zero79-print-style';"
+
+                        +
+
+                "style.innerHTML="
+
+                        +
+
+                "\"html,body{margin:0!important;padding:0!important;background:#fff!important;}\"+"
+
+                        +
+
+                "\"#documento-oficial{display:block!important;visibility:visible!important;width:210mm!important;min-height:297mm!important;margin:0!important;box-shadow:none!important;border:0!important;background:#fff!important;}\"+"
+
+                        +
+
+                "\"#documento-oficial *{visibility:visible!important;}\";"
+
+                        +
+
+                "document.head.appendChild(style);"
+
+                        +
+
+                "var hidden=[];"
+
+                        +
+
+                "var node=doc;"
+
+                        +
+
+                "while(node&&node!==document.body){"
+
+                            +
+
+                    "var parent=node.parentElement;"
+
+                            +
+
+                    "if(!parent)break;"
+
+                            +
+
+                    "for(var i=0;i<parent.children.length;i++){"
+
+                                +
+
+                        "var sibling=parent.children[i];"
+
+                                +
+
+                        "if(sibling!==node){"
+
+                                    +
+
+                            "hidden.push({"
+
+                                +
+
+                                "el:sibling,"
+
+                                +
+
+                                "display:sibling.style.display,"
+
+                                +
+
+                                "visibility:sibling.style.visibility"
+
+                            +
+
+                            "});"
+
+                                    +
+
+                            "sibling.style.display='none';"
+
+                                +
+
+                        "}"
+
+                            +
+
+                    "}"
+
+                            +
+
+                    "node=parent;"
+
+                +
+
+                "}"
+
+                        +
+
+                "window.__zero79HiddenElements=hidden;"
+
+                        +
+
+                "document.body.style.background='#fff';"
+
+                        +
+
+                "void doc.offsetHeight;"
+
+                        +
+
+                "return true;"
+
+                        +
+
+                "})()";
+
+
+        webView.evaluateJavascript(
+                js,
+                value -> {
+
+                    if (value == null ||
+                            "false".equals(value)) {
+
+                        showPdfError(
+                                "Não foi possível preparar o documento para PDF."
+                        );
+
+                        return;
+                    }
+
+
+                    /*
+                     * Pequena espera para o WebView terminar
+                     * de redesenhar o documento.
+                     */
+
+                    webView.postDelayed(
+                            () -> createNativePdf(fileName),
+                            500
+                    );
+                }
+        );
+    }
+
+
+
+    /*
+     * ============================================================
+     * GERAÇÃO DO PDF
+     * ============================================================
+     */
+
+    private void createNativePdf(
+            final String fileName
+    ) {
+
+        if (pdfPrinting) {
+
+            showPdfError(
+                    "Já existe uma geração de PDF em andamento."
+            );
+
+            return;
+        }
+
+
+        pdfPrinting = true;
+
+
+        /*
+         * Obtém o tamanho real do documento.
+         */
+
+        final String js =
+                "(function(){"
+
+                        +
+
+                "var d=document.getElementById('documento-oficial');"
+
+                        +
+
+                "if(!d)return 'ERROR';"
+
+                        +
+
+                "var r=d.getBoundingClientRect();"
+
+                        +
+
+                "return Math.ceil(Math.max("
+
+                            +
+
+                            "d.scrollWidth,"
+
+                            +
+
+                            "d.offsetWidth,"
+
+                            +
+
+                            "r.width"
+
+                        +
+
+                    "))+'|'+Math.ceil(Math.max("
+
+                            +
+
+                            "d.scrollHeight,"
+
+                            +
+
+                            "d.offsetHeight,"
+
+                            +
+
+                            "r.height"
+
+                        +
+
+                    "));"
+
+                        +
+
+                "})()";
+
+
+        webView.evaluateJavascript(
+                js,
+                value -> {
+
+                    try {
+
+                        if (value == null ||
+                                value.equals("null") ||
+                                value.contains("ERROR")) {
+
+                            throw new Exception(
+                                    "Documento oficial não encontrado."
+                            );
+                        }
+
+
+                        /*
+                         * Remove as aspas retornadas pelo evaluateJavascript.
+                         */
+
+                        String dimensions =
+                                value.replace("\\\"", "");
+
+
+                        String[] parts =
+                                dimensions.split("\\|");
+
+
+                        if (parts.length != 2) {
+
+                            throw new Exception(
+                                    "Não foi possível obter o tamanho do documento."
+                            );
+                        }
+
+
+                        int contentWidth =
+                                Math.max(
+                                        1,
+                                        (int) Math.ceil(
+                                                Double.parseDouble(parts[0])
+                                        )
+                                );
+
+
+                        int contentHeight =
+                                Math.max(
+                                        1,
+                                        (int) Math.ceil(
+                                                Double.parseDouble(parts[1])
+                                        )
+                                );
+
+
+                        /*
+                         * A4 em pontos PDF:
+                         *
+                         * largura = 595
+                         * altura  = 842
+                         */
+
+                        final int pageWidth = 595;
+
+                        final int pageHeight = 842;
+
+
+                        /*
+                         * Calcula a escala necessária
+                         * para caber no A4.
+                         */
+
+                        final float scale =
+                                Math.min(
+                                        (float) pageWidth /
+                                                (float) contentWidth,
+
+                                        (float) pageHeight /
+                                                (float) contentHeight
+                                );
+
+
+                        int renderedWidth =
+                                Math.max(
+                                        1,
+                                        Math.round(
+                                                contentWidth * scale
+                                        )
+                                );
+
+
+                        int renderedHeight =
+                                Math.max(
+                                        1,
+                                        Math.round(
+                                                contentHeight * scale
+                                        )
+                                );
+
+
+                        /*
+                         * Mede o WebView com o tamanho real
+                         * do documento, não com o tamanho da tela.
+                         */
+
+                        int widthSpec =
+                                View.MeasureSpec.makeMeasureSpec(
+                                        contentWidth,
+                                        View.MeasureSpec.EXACTLY
+                                );
+
+
+                        int heightSpec =
+                                View.MeasureSpec.makeMeasureSpec(
+                                        contentHeight,
+                                        View.MeasureSpec.EXACTLY
+                                );
+
+
+                        webView.measure(
+                                widthSpec,
+                                heightSpec
+                        );
+
+
+                        webView.layout(
+                                0,
+                                0,
+                                contentWidth,
+                                contentHeight
+                        );
+
+
+                        /*
+                         * Arquivo temporário.
+                         */
+
+                        pdfTempFile =
+                                File.createTempFile(
+                                        "zero79_",
+                                        ".pdf",
+                                        getCacheDir()
+                                );
+
+
+                        PdfDocument pdf =
+                                new PdfDocument();
+
+
+                        try {
+
+                            /*
+                             * Calcula quantas páginas A4 serão necessárias.
+                             */
+
+                            int pageCount =
+                                    Math.max(
+                                            1,
+                                            (int) Math.ceil(
+                                                    (double) renderedHeight /
+                                                            (double) pageHeight
+                                            )
+                                    );
+
+
+                            /*
+                             * Cria cada página.
+                             */
+
+                            for (
+                                    int pageNumber = 0;
+                                    pageNumber < pageCount;
+                                    pageNumber++
+                            ) {
+
+
+                                PdfDocument.PageInfo pageInfo =
+                                        new PdfDocument.PageInfo.Builder(
+                                                pageWidth,
+                                                pageHeight,
+                                                pageNumber + 1
+                                        ).create();
+
+
+                                PdfDocument.Page page =
+                                        pdf.startPage(
+                                                pageInfo
+                                        );
+
+
+                                android.graphics.Canvas canvas =
+                                        page.getCanvas();
+
+
+                                /*
+                                 * Fundo branco.
+                                 */
+
+                                canvas.drawColor(
+                                        Color.WHITE
+                                );
+
+
+                                canvas.save();
+
+
+                                /*
+                                 * Aplica escala.
+                                 */
+
+                                canvas.scale(
+                                        scale,
+                                        scale
+                                );
+
+
+                                /*
+                                 * Centraliza horizontalmente.
+                                 */
+
+                                float left =
+                                        (
+                                                pageWidth / scale
+                                                        -
+                                                contentWidth
+                                        ) / 2f;
+
+
+                                if (left < 0) {
+                                    left = 0;
+                                }
+
+
+                                /*
+                                 * Move verticalmente de acordo
+                                 * com a página atual.
+                                 */
+
+                                canvas.translate(
+                                        left,
+                                        -(
+                                                pageNumber *
+                                                        pageHeight
+                                        ) / scale
+                                );
+
+
+                                /*
+                                 * Desenha o WebView no PDF.
+                                 */
+
+                                webView.draw(
+                                        canvas
+                                );
+
+
+                                canvas.restore();
+
+
+                                pdf.finishPage(
+                                        page
+                                );
+                            }
+
+
+                            /*
+                             * Grava o PDF temporário.
+                             */
+
+                            try (
+                                    FileOutputStream out =
+                                            new FileOutputStream(
+                                                    pdfTempFile
+                                            )
+                            ) {
+
+                                pdf.writeTo(out);
+                            }
+
+
+                        } finally {
+
+                            pdf.close();
+                        }
+
+
+                        /*
+                         * Confirma que o arquivo foi realmente criado.
+                         */
+
+                        if (!pdfTempFile.exists() ||
+                                pdfTempFile.length() == 0) {
+
+                            throw new Exception(
+                                    "O arquivo PDF foi gerado vazio."
+                            );
+                        }
+
+
+                        /*
+                         * Salva em Downloads.
+                         */
+
+                        savePdfToDownloads(
+                                pdfTempFile,
+                                fileName
+                        );
+
+
+                        /*
+                         * Restaura a página original.
+                         */
+
+                        restorePageAfterPrint();
+
+
+                        Toast.makeText(
+                                MainActivity.this,
+                                "PDF salvo em Downloads/" +
+                                        fileName,
+                                Toast.LENGTH_LONG
+                        ).show();
+
+
+                        deleteTempPdf();
+
+
+                        pdfPrinting = false;
+
+
+                    } catch (Exception e) {
+
+                        finishPdfError(
+                                "Erro ao gerar PDF: " +
+                                        e.getMessage()
+                        );
+                    }
+                }
+        );
+    }
+
+
+
+    /*
+     * ============================================================
+     * FINALIZAÇÃO DE PDF
+     * ============================================================
+     */
+
+    private void finishPdfSuccess(
+            String fileName
+    ) {
+
+        try {
+
+            if (pdfTempFile == null ||
+                    !pdfTempFile.exists() ||
+                    pdfTempFile.length() == 0) {
+
+                throw new Exception(
+                        "O arquivo PDF foi gerado vazio."
+                );
             }
+
+
+            savePdfToDownloads(
+                    pdfTempFile,
+                    fileName
+            );
+
+
+            restorePageAfterPrint();
+
+
+            Toast.makeText(
+                    this,
+                    "PDF salvo em Downloads/" +
+                            fileName,
+                    Toast.LENGTH_LONG
+            ).show();
+
+
         } catch (Exception e) {
-            Toast.makeText(getApplicationContext(), "Erro ao baixar arquivo: " + e.getMessage(), Toast.LENGTH_LONG).show();
+
+            restorePageAfterPrint();
+
+
+            Toast.makeText(
+                    this,
+                    "Erro ao salvar PDF: " +
+                            e.getMessage(),
+                    Toast.LENGTH_LONG
+            ).show();
+
+
+        } finally {
+
+            deleteTempPdf();
+
+            pdfPrinting = false;
         }
     }
+
+
+
+    private void finishPdfError(
+            String message
+    ) {
+
+        restorePageAfterPrint();
+
+        deleteTempPdf();
+
+        pdfPrinting = false;
+
+        showPdfError(message);
+    }
+
+
+
+    private void showPdfError(
+            String message
+    ) {
+
+        runOnUiThread(
+                () -> Toast.makeText(
+                        MainActivity.this,
+                        message,
+                        Toast.LENGTH_LONG
+                ).show()
+        );
+    }
+
+
+
+    /*
+     * ============================================================
+     * APAGA ARQUIVO TEMPORÁRIO
+     * ============================================================
+     */
+
+    private void deleteTempPdf() {
+
+        if (pdfTempFile != null) {
+
+            try {
+
+                pdfTempFile.delete();
+
+            } catch (Exception ignored) {
+            }
+
+            pdfTempFile = null;
+        }
+    }
+
+
+
+    /*
+     * ============================================================
+     * SALVAR PDF EM DOWNLOADS
+     * ============================================================
+     */
+
+    private void savePdfToDownloads(
+            File source,
+            String fileName
+    ) throws Exception {
+
+
+        /*
+         * Android 10 ou superior.
+         */
+
+        if (Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.Q) {
+
+
+            ContentValues values =
+                    new ContentValues();
+
+
+            values.put(
+                    MediaStore.Downloads.DISPLAY_NAME,
+                    fileName
+            );
+
+
+            values.put(
+                    MediaStore.Downloads.MIME_TYPE,
+                    "application/pdf"
+            );
+
+
+            values.put(
+                    MediaStore.Downloads.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS
+            );
+
+
+            values.put(
+                    MediaStore.Downloads.IS_PENDING,
+                    1
+            );
+
+
+            Uri uri =
+                    getContentResolver().insert(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                            values
+                    );
+
+
+            if (uri == null) {
+
+                throw new Exception(
+                        "Não foi possível criar o arquivo em Downloads."
+                );
+            }
+
+
+            try {
+
+                try (
+                        InputStream in =
+                                new FileInputStream(source);
+
+                        OutputStream out =
+                                getContentResolver()
+                                        .openOutputStream(uri)
+                ) {
+
+                    if (out == null) {
+
+                        throw new Exception(
+                                "Não foi possível abrir o destino do PDF."
+                        );
+                    }
+
+
+                    copy(
+                            in,
+                            out
+                    );
+                }
+
+
+                ContentValues done =
+                        new ContentValues();
+
+
+                done.put(
+                        MediaStore.Downloads.IS_PENDING,
+                        0
+                );
+
+
+                getContentResolver().update(
+                        uri,
+                        done,
+                        null,
+                        null
+                );
+
+
+            } catch (Exception e) {
+
+                getContentResolver().delete(
+                        uri,
+                        null,
+                        null
+                );
+
+
+                throw e;
+            }
+
+
+        } else {
+
+
+            /*
+             * Android 9 ou inferior.
+             */
+
+            File dir =
+                    getExternalFilesDir(
+                            Environment.DIRECTORY_DOWNLOADS
+                    );
+
+
+            if (dir == null) {
+
+                throw new Exception(
+                        "Pasta de Downloads indisponível."
+                );
+            }
+
+
+            if (!dir.exists() &&
+                    !dir.mkdirs()) {
+
+                throw new Exception(
+                        "Não foi possível criar a pasta de Downloads."
+                );
+            }
+
+
+            File destination =
+                    new File(
+                            dir,
+                            fileName
+                    );
+
+
+            try (
+                    InputStream in =
+                            new FileInputStream(source);
+
+                    OutputStream out =
+                            new FileOutputStream(destination)
+            ) {
+
+                copy(
+                        in,
+                        out
+                );
+            }
+        }
+    }
+
+
+
+    /*
+     * ============================================================
+     * COPIAR ARQUIVO
+     * ============================================================
+     */
+
+    private void copy(
+            InputStream in,
+            OutputStream out
+    ) throws Exception {
+
+
+        byte[] buffer =
+                new byte[8192];
+
+
+        int read;
+
+
+        while (
+                (read = in.read(buffer)) != -1
+        ) {
+
+            out.write(
+                    buffer,
+                    0,
+                    read
+            );
+        }
+
+
+        out.flush();
+    }
+
+
+
+    /*
+     * ============================================================
+     * RESTAURAR PÁGINA
+     * ============================================================
+     */
+
+    private void restorePageAfterPrint() {
+
+        if (webView == null) {
+            return;
+        }
+
+
+        webView.post(
+                () -> webView.evaluateJavascript(
+
+                        "(function(){"
+
+                                +
+
+                        "var h=" +
+                                "window.__zero79HiddenElements||[];"
+
+                                +
+
+                        "for(var i=0;i<h.length;i++){"
+
+                            +
+
+                            "if(h[i]&&h[i].el)"
+
+                                +
+
+                                "h[i].el.style.display="
+
+                                +
+
+                                "h[i].display||'';"
+
+                        +
+
+                        "}"
+
+                                +
+
+                        "window.__zero79HiddenElements=[];"
+
+                                +
+
+                        "var style="
+
+                                +
+
+                        "document.getElementById("
+
+                                +
+
+                        "'zero79-print-style'"
+
+                                +
+
+                        ");"
+
+                                +
+
+                        "if(style)style.remove();"
+
+                                +
+
+                        "document.body.removeAttribute("
+
+                                +
+
+                        "'data-zero79-printing'"
+
+                                +
+
+                        ");"
+
+                                +
+
+                        "})()",
+
+                        null
+                )
+        );
+    }
+
+
+
+    /*
+     * ============================================================
+     * CONTROLE DE LINKS
+     * ============================================================
+     */
+
+    private boolean handleUrl(
+            Uri uri
+    ) {
+
+        String scheme =
+                uri.getScheme() == null
+                        ? ""
+                        : uri.getScheme().toLowerCase();
+
+
+        String host =
+                uri.getHost() == null
+                        ? ""
+                        : uri.getHost().toLowerCase();
+
+
+        if (
+                scheme.equals("http") ||
+                scheme.equals("https")
+        ) {
+
+
+            /*
+             * Mantém os domínios do ZERO79/Firebase
+             * dentro do WebView.
+             */
+
+            if (
+                    host.equals(
+                            "zero79.netlify.app"
+                    )
+
+                    ||
+
+                    host.endsWith(
+                            "firebaseapp.com"
+                    )
+
+                    ||
+
+                    host.endsWith(
+                            "googleapis.com"
+                    )
+
+                    ||
+
+                    host.endsWith(
+                            "gstatic.com"
+                    )
+            ) {
+
+                return false;
+            }
+
+
+            /*
+             * Links externos abrem fora do aplicativo.
+             */
+
+            openExternal(uri);
+
+            return true;
+        }
+
+
+        /*
+         * Links especiais.
+         */
+
+        if (
+                scheme.equals("mailto") ||
+                scheme.equals("tel") ||
+                scheme.equals("sms") ||
+                scheme.equals("whatsapp") ||
+                scheme.equals("intent")
+        ) {
+
+            openExternal(uri);
+
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+
+    /*
+     * ============================================================
+     * ABRIR LINK EXTERNO
+     * ============================================================
+     */
+
+    private void openExternal(
+            Uri uri
+    ) {
+
+        try {
+
+            startActivity(
+                    new Intent(
+                            Intent.ACTION_VIEW,
+                            uri
+                    )
+            );
+
+        } catch (Exception e) {
+
+            Toast.makeText(
+                    this,
+                    "Não foi possível abrir este link.",
+                    Toast.LENGTH_SHORT
+            ).show();
+        }
+    }
+
+
+
+    /*
+     * ============================================================
+     * VERIFICAR INTERNET
+     * ============================================================
+     */
+
+    private boolean isOnline() {
+
+        ConnectivityManager cm =
+                (ConnectivityManager)
+                        getSystemService(
+                                Context.CONNECTIVITY_SERVICE
+                        );
+
+
+        if (cm == null) {
+            return false;
+        }
+
+
+        Network network =
+                cm.getActiveNetwork();
+
+
+        if (network == null) {
+            return false;
+        }
+
+
+        NetworkCapabilities capabilities =
+                cm.getNetworkCapabilities(
+                        network
+                );
+
+
+        return capabilities != null &&
+                capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_INTERNET
+                );
+    }
+
+
+
+    /*
+     * ============================================================
+     * BOTÃO VOLTAR
+     * ============================================================
+     */
 
     @Override
     public void onBackPressed() {
-        if (webView.canGoBack()) {
+
+        if (
+                webView != null &&
+                webView.canGoBack()
+        ) {
+
             webView.goBack();
+
         } else {
+
             super.onBackPressed();
+        }
+    }
+
+
+
+    /*
+     * ============================================================
+     * RESULTADO DO SELETOR DE ARQUIVOS
+     * ============================================================
+     */
+
+    @Override
+    protected void onActivityResult(
+            int requestCode,
+            int resultCode,
+            Intent data
+    ) {
+
+        super.onActivityResult(
+                requestCode,
+                resultCode,
+                data
+        );
+
+
+        if (
+                requestCode ==
+                        FILE_CHOOSER_REQUEST &&
+
+                filePathCallback != null
+        ) {
+
+
+            Uri[] results =
+                    WebChromeClient.FileChooserParams
+                            .parseResult(
+                                    resultCode,
+                                    data
+                            );
+
+
+            filePathCallback.onReceiveValue(
+                    results
+            );
+
+
+            filePathCallback = null;
+        }
+    }
+
+
+
+    /*
+     * ============================================================
+     * SALVAR ESTADO DO WEBVIEW
+     * ============================================================
+     */
+
+    @Override
+    protected void onSaveInstanceState(
+            Bundle outState
+    ) {
+
+        if (webView != null) {
+
+            webView.saveState(
+                    outState
+            );
+        }
+
+
+        super.onSaveInstanceState(
+                outState
+        );
+    }
+
+
+
+    /*
+     * ============================================================
+     * PONTE JAVASCRIPT -> ANDROID
+     * ============================================================
+     */
+
+    private class PdfBridge {
+
+
+        /*
+         * Chamado pelo JavaScript quando a função
+         * salvarPDF() chega ao .save().
+         */
+
+        @JavascriptInterface
+        public void printOfficialPdf(
+                String fileName
+        ) {
+
+            runOnUiThread(
+                    () -> {
+
+                        if (pdfPrinting) {
+
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "Já existe uma geração de PDF em andamento.",
+                                    Toast.LENGTH_SHORT
+                            ).show();
+
+                            return;
+                        }
+
+
+                        preparePageForPrint(
+                                fileName
+                        );
+                    }
+            );
+        }
+
+
+
+        /*
+         * Erros enviados pelo JavaScript.
+         */
+
+        @JavascriptInterface
+        public void printError(
+                String message
+        ) {
+
+            runOnUiThread(
+                    () -> showPdfError(
+                            message
+                    )
+            );
         }
     }
 }
