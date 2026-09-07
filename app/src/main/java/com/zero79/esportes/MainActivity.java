@@ -9,25 +9,26 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.Settings;
+import android.provider.MediaStore;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
-import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
-import android.os.Build;
 import android.util.Base64;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.io.OutputStream;
 
 public class MainActivity extends Activity {
     private static final String HOME_URL = "https://zero79.netlify.app/";
@@ -65,7 +66,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                injectPdfDownloadBridge(view);
+                injectAndroidPdfFunctions(view);
             }
 
             @Override
@@ -81,19 +82,28 @@ public class MainActivity extends Activity {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback,
-                                             FileChooserParams fileChooserParams) {
+            public boolean onShowFileChooser(
+                    WebView webView,
+                    ValueCallback<Uri[]> filePathCallback,
+                    FileChooserParams fileChooserParams) {
+
                 if (MainActivity.this.filePathCallback != null) {
                     MainActivity.this.filePathCallback.onReceiveValue(null);
                 }
+
                 MainActivity.this.filePathCallback = filePathCallback;
+
                 try {
                     Intent intent = fileChooserParams.createIntent();
                     startActivityForResult(intent, FILE_CHOOSER_REQUEST);
                     return true;
                 } catch (ActivityNotFoundException e) {
                     MainActivity.this.filePathCallback = null;
-                    Toast.makeText(MainActivity.this, "Não foi possível abrir o seletor de arquivos.", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(
+                            MainActivity.this,
+                            "Não foi possível abrir o seletor de arquivos.",
+                            Toast.LENGTH_SHORT
+                    ).show();
                     return false;
                 }
             }
@@ -101,17 +111,40 @@ public class MainActivity extends Activity {
 
         webView.setDownloadListener(new DownloadListener() {
             @Override
-            public void onDownloadStart(String url, String userAgent, String contentDisposition,
-                                        String mimetype, long contentLength) {
+            public void onDownloadStart(
+                    String url,
+                    String userAgent,
+                    String contentDisposition,
+                    String mimetype,
+                    long contentLength) {
+
                 try {
-                    DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                    request.setMimeType(mimetype);
+                    DownloadManager.Request request =
+                            new DownloadManager.Request(Uri.parse(url));
+
+                    request.setMimeType(
+                            mimetype == null ? "application/octet-stream" : mimetype
+                    );
                     request.addRequestHeader("User-Agent", userAgent);
-                    request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                    request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "ZERO79_arquivo");
-                    DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                    dm.enqueue(request);
-                    Toast.makeText(MainActivity.this, "Download iniciado.", Toast.LENGTH_SHORT).show();
+                    request.setNotificationVisibility(
+                            DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                    );
+                    request.setDestinationInExternalPublicDir(
+                            Environment.DIRECTORY_DOWNLOADS,
+                            "ZERO79_arquivo"
+                    );
+
+                    DownloadManager dm =
+                            (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+
+                    if (dm != null) {
+                        dm.enqueue(request);
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Download iniciado.",
+                                Toast.LENGTH_SHORT
+                        ).show();
+                    }
                 } catch (Exception e) {
                     openExternal(Uri.parse(url));
                 }
@@ -119,7 +152,11 @@ public class MainActivity extends Activity {
         });
 
         if (!isOnline()) {
-            Toast.makeText(this, "Sem conexão com a internet. O ZERO79 precisa estar online para acessar o Firebase.", Toast.LENGTH_LONG).show();
+            Toast.makeText(
+                    this,
+                    "Sem conexão com a internet. O ZERO79 precisa estar online para acessar o Firebase.",
+                    Toast.LENGTH_LONG
+            ).show();
         }
 
         if (savedInstanceState == null) {
@@ -129,187 +166,294 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void injectPdfDownloadBridge(WebView view) {
-        String js = "javascript:(function(){" +
-                "if(window.__zero79PdfBridgeInstalled)return;window.__zero79PdfBridgeInstalled=true;" +
-
-                // html2pdf.js 0.10.1 normally ends its .save() through FileSaver.saveAs().
-                // Intercept that native browser download path and send the Blob directly to Android.
-                if (typeof window.saveAs === 'function') {
-                    var originalSaveAs = window.saveAs;
-                    window.saveAs = function(blob, name) {
-                        try {
-                            if (blob instanceof Blob) {
-                                var fr = new FileReader();
-                                fr.onloadend = function() {
-                                    var x = fr.result || '', i = x.indexOf(',');
-                                    AndroidPdfBridge.saveBase64(
-                                        i >= 0 ? x.substring(i + 1) : x,
-                                        blob.type || 'application/pdf',
-                                        name || 'ZERO79.pdf'
-                                    );
-                                };
-                                fr.onerror = function() {
-                                    AndroidPdfBridge.error('Falha ao ler o PDF gerado.');
-                                };
-                                fr.readAsDataURL(blob);
-                                return;
-                            }
-                        } catch (e) {
-                            AndroidPdfBridge.error(String(e));
-                            return;
-                        }
-                        return originalSaveAs.apply(this, arguments);
-                    };
-                }
-
-                // Keep a reference to every Blob created by html2pdf.
-                // This avoids relying on Android opening a blob: URL.
-                "window.__zero79BlobStore={};" +
-                "var originalCreateObjectURL=URL.createObjectURL.bind(URL);" +
-                "URL.createObjectURL=function(obj){" +
-                "var u=originalCreateObjectURL(obj);" +
-                "try{window.__zero79BlobStore[u]=obj;}catch(e){}" +
-                "return u;" +
-                "};" +
-
-                "window.__zero79SaveBlob=function(u,n){" +
+    /*
+     * SOLUÇÃO DEFINITIVA DO PDF:
+     *
+     * O index.html continua exatamente como está.
+     * No Android, substituímos salvarPDF() para usar:
+     *
+     * html2pdf -> outputPdf('blob') -> FileReader -> Base64 -> Java/MediaStore
+     *
+     * Assim o WebView nunca tenta abrir ou navegar para blob:.
+     */
+    private void injectAndroidPdfFunctions(WebView view) {
+        String js =
+                "(function(){" +
                 "try{" +
-                "var b=window.__zero79BlobStore[u];" +
-                "var send=function(blob){" +
-                "var fr=new FileReader();" +
-                "fr.onloadend=function(){" +
-                "var x=fr.result||'',i=x.indexOf(',');" +
-                "AndroidPdfBridge.saveBase64(i>=0?x.substring(i+1):x,blob.type||'application/pdf',n||'ZERO79.pdf');" +
+                "if(window.__zero79AndroidPdfInstalled){return;}" +
+                "window.__zero79AndroidPdfInstalled=true;" +
+
+                "window.__zero79AndroidSendPdf=function(blob,fileName){" +
+                "try{" +
+                "if(!blob){AndroidPdfBridge.error('PDF vazio.');return;}" +
+                "var reader=new FileReader();" +
+                "reader.onloadend=function(){" +
+                "try{" +
+                "var result=reader.result||'';" +
+                "var comma=result.indexOf(',');" +
+                "var base64=comma>=0?result.substring(comma+1):result;" +
+                "if(!base64){AndroidPdfBridge.error('PDF sem conteúdo.');return;}" +
+                "AndroidPdfBridge.saveBase64(base64,'application/pdf',fileName||'ZERO79.pdf');" +
+                "}catch(e){AndroidPdfBridge.error(String(e));}" +
                 "};" +
-                "fr.onerror=function(){AndroidPdfBridge.error('Falha ao ler o PDF.');};" +
-                "fr.readAsDataURL(blob);" +
-                "};" +
-                "if(b){send(b);}else{" +
-                "fetch(u).then(function(r){return r.blob()}).then(send).catch(function(e){AndroidPdfBridge.error(String(e));});" +
-                "}" +
+                "reader.onerror=function(){AndroidPdfBridge.error('Falha ao ler o PDF gerado.');};" +
+                "reader.readAsDataURL(blob);" +
                 "}catch(e){AndroidPdfBridge.error(String(e));}" +
                 "};" +
 
-                // Capture real user/programmatic clicks before WebView navigation occurs.
-                "document.addEventListener('click',function(e){" +
+                "window.salvarPDF=function(){" +
                 "try{" +
-                "var el=e.target;" +
-                "var a=el&&el.closest?el.closest('a'):null;" +
-                "if(a){" +
-                "var h=a.href||'';" +
-                "if(h.indexOf('blob:')===0){" +
-                "e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();" +
-                "window.__zero79SaveBlob(h,a.getAttribute('download')||'ZERO79.pdf');" +
-                "return false;" +
+                "var atletas=getAtletasOrdenados().filter(function(a){return a.treinaHoje;});" +
+                "var acompanhantes=getAcompanhantesOrdenados().filter(function(a){return a.treinaHoje;});" +
+                "if(atletas.length===0&&acompanhantes.length===0){" +
+                "alert('Selecione ao menos um atleta!');return;" +
                 "}" +
-                "}" +
-                "}catch(x){}" +
-                "},true);" +
-
-                // Also cover code that explicitly calls anchor.click().
-                "var originalClick=HTMLAnchorElement.prototype.click;" +
-                "HTMLAnchorElement.prototype.click=function(){" +
-                "var a=this,h=a.href||'';" +
-                "if(h.indexOf('blob:')===0){" +
-                "window.__zero79SaveBlob(h,a.getAttribute('download')||'ZERO79.pdf');return;" +
-                "}" +
-                "return originalClick.call(a);" +
+                "var element=document.getElementById('documento-oficial');" +
+                "if(!element){AndroidPdfBridge.error('Documento oficial não encontrado.');return;}" +
+                "if(typeof html2pdf!=='function'){AndroidPdfBridge.error('Biblioteca PDF não carregada.');return;}" +
+                "var opt={" +
+                "margin:0," +
+                "filename:'Liberacao_Acesso_Rio.pdf'," +
+                "image:{type:'jpeg',quality:0.98}," +
+                "html2canvas:{scale:2,useCORS:true}," +
+                "jsPDF:{unit:'mm',format:'a4',orientation:'portrait'}" +
+                "};" +
+                "html2pdf().set(opt).from(element).outputPdf('blob')" +
+                ".then(function(blob){" +
+                "window.__zero79AndroidSendPdf(blob,'Liberacao_Acesso_Rio.pdf');" +
+                "})" +
+                ".catch(function(e){AndroidPdfBridge.error(String(e));});" +
+                "}catch(e){AndroidPdfBridge.error(String(e));}" +
                 "};" +
 
-                // Also cover window.open(blob:...).
-                "var originalOpen=window.open;" +
-                "window.open=function(u,t,f){" +
-                "if(typeof u==='string'&&u.indexOf('blob:')===0){" +
-                "window.__zero79SaveBlob(u,'ZERO79.pdf');return null;" +
+                "window.salvarPDFCompeticao=function(){" +
+                "try{" +
+                "var select=document.getElementById('select-competicao-alvo');" +
+                "var nomeComp=select?select.value:'';" +
+                "var atletas=getAtletasOrdenados().filter(function(a){return a.competicoes&&a.competicoes[nomeComp];});" +
+                "if(atletas.length===0){" +
+                "alert('Selecione ao menos um atleta participante para esta competição!');return;" +
                 "}" +
-                "return originalOpen.call(window,u,t,f);" +
+                "var div=document.createElement('div');" +
+                "div.className='a4-preview';" +
+                "div.innerHTML=" +
+                "'<div style=\"text-align:center;margin-bottom:20px;\">'+" +
+                "'<h1 style=\"font-size:28px;font-weight:900;font-style:italic;color:#003853;margin:0;\">ZERO<span style=\"color:#82c324;\">79</span></h1>'+" +
+                "'<p style=\"font-size:11px;font-weight:bold;letter-spacing:4px;color:#003853;margin-top:4px;\">ESPORTES</p>'+" +
+                "'</div>'+" +
+                "'<h2 style=\"text-align:center;font-size:15px;font-weight:bold;margin-bottom:18px;text-decoration:underline;\">RELAÇÃO DE ATLETAS - '+nomeComp.toUpperCase()+'</h2>'+" +
+                "'<table><thead><tr><th>ATLETA</th><th>DATA DE NASCIMENTO</th><th>CPF/RG</th></tr></thead><tbody>'+" +
+                "atletas.map(function(a){return '<tr><td>'+a.nome+'</td><td>'+(a.dataNascimento||'')+'</td><td>'+(a.cpf||'')+'</td></tr>';}).join('')+" +
+                "'</tbody></table>'+" +
+                "'<div style=\"margin-top:50px;font-size:13px;\"><p>Responsável Técnico: Edmundo Júnior - CREF 005911-G/SE</p></div>';" +
+                "document.body.appendChild(div);" +
+                "var opt={" +
+                "margin:0," +
+                "filename:'Inscritos_'+nomeComp+'.pdf'," +
+                "image:{type:'jpeg',quality:0.98}," +
+                "html2canvas:{scale:2,useCORS:true}," +
+                "jsPDF:{unit:'mm',format:'a4',orientation:'portrait'}" +
                 "};" +
-                "})()";
+                "html2pdf().set(opt).from(div).outputPdf('blob')" +
+                ".then(function(blob){" +
+                "window.__zero79AndroidSendPdf(blob,'Inscritos_'+nomeComp+'.pdf');" +
+                "if(div.parentNode){div.parentNode.removeChild(div);}" +
+                "})" +
+                ".catch(function(e){" +
+                "if(div.parentNode){div.parentNode.removeChild(div);}" +
+                "AndroidPdfBridge.error(String(e));" +
+                "});" +
+                "}catch(e){AndroidPdfBridge.error(String(e));}" +
+                "};" +
+
+                "}catch(e){try{AndroidPdfBridge.error(String(e));}catch(ignore){}}" +
+                "})();";
 
         view.evaluateJavascript(js, null);
     }
 
-
     private static class PdfBridge {
         private final Context context;
-        PdfBridge(Context context) { this.context = context.getApplicationContext(); }
+
+        PdfBridge(Context context) {
+            this.context = context.getApplicationContext();
+        }
 
         @JavascriptInterface
         public void saveBase64(String base64, String mimeType, String fileName) {
             try {
+                if (base64 == null || base64.trim().isEmpty()) {
+                    throw new IOException("Conteúdo do PDF vazio.");
+                }
+
                 byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
-                String safeName = (fileName == null || fileName.trim().isEmpty()) ? "ZERO79.pdf" : fileName.replaceAll("[\\/:*?\"<>|]", "_");
-                if (!safeName.toLowerCase().endsWith(".pdf") && "application/pdf".equalsIgnoreCase(mimeType)) safeName += ".pdf";
+
+                if (bytes.length == 0) {
+                    throw new IOException("PDF sem bytes.");
+                }
+
+                String safeName =
+                        (fileName == null || fileName.trim().isEmpty())
+                                ? "ZERO79.pdf"
+                                : fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+                if (!safeName.toLowerCase().endsWith(".pdf")) {
+                    safeName += ".pdf";
+                }
+
+                String mime =
+                        (mimeType == null || mimeType.trim().isEmpty())
+                                ? "application/pdf"
+                                : mimeType;
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    android.content.ContentValues values = new android.content.ContentValues();
-                    values.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName);
-                    values.put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType == null ? "application/pdf" : mimeType);
-                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
-                    Uri uri = context.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                    if (uri == null) throw new IOException("Não foi possível criar o arquivo.");
-                    try (java.io.OutputStream out = context.getContentResolver().openOutputStream(uri)) {
-                        if (out == null) throw new IOException("Não foi possível abrir o arquivo.");
-                        out.write(bytes);
+                    android.content.ContentValues values =
+                            new android.content.ContentValues();
+
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, mime);
+                    values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+                    Uri uri = context.getContentResolver().insert(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                            values
+                    );
+
+                    if (uri == null) {
+                        throw new IOException(
+                                "Não foi possível criar o arquivo em Downloads."
+                        );
                     }
-                    values.clear();
-                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
-                    context.getContentResolver().update(uri, values, null, null);
+
+                    try {
+                        try (OutputStream out =
+                                     context.getContentResolver().openOutputStream(uri)) {
+
+                            if (out == null) {
+                                throw new IOException(
+                                        "Não foi possível abrir o arquivo em Downloads."
+                                );
+                            }
+
+                            out.write(bytes);
+                            out.flush();
+                        }
+                    } catch (Exception e) {
+                        try {
+                            context.getContentResolver().delete(uri, null, null);
+                        } catch (Exception ignored) {
+                        }
+                        throw e;
+                    }
+
+                    android.content.ContentValues done =
+                            new android.content.ContentValues();
+                    done.put(MediaStore.Downloads.IS_PENDING, 0);
+
+                    context.getContentResolver().update(
+                            uri,
+                            done,
+                            null,
+                            null
+                    );
+
                 } else {
-                    File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-                    if (dir == null) throw new IOException("Pasta de downloads indisponível.");
-                    if (!dir.exists() && !dir.mkdirs()) throw new IOException("Não foi possível criar a pasta.");
+                    File dir =
+                            context.getExternalFilesDir(
+                                    Environment.DIRECTORY_DOWNLOADS
+                            );
+
+                    if (dir == null) {
+                        throw new IOException(
+                                "Pasta de downloads indisponível."
+                        );
+                    }
+
+                    if (!dir.exists() && !dir.mkdirs()) {
+                        throw new IOException(
+                                "Não foi possível criar a pasta."
+                        );
+                    }
+
                     File file = new File(dir, safeName);
-                    try (FileOutputStream out = new FileOutputStream(file)) { out.write(bytes); }
+
+                    try (FileOutputStream out =
+                                 new FileOutputStream(file)) {
+                        out.write(bytes);
+                        out.flush();
+                    }
                 }
-                android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+
                 final String finalSafeName = safeName;
-main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + finalSafeName, Toast.LENGTH_LONG).show());
+
+                android.os.Handler main =
+                        new android.os.Handler(
+                                android.os.Looper.getMainLooper()
+                        );
+
+                main.post(() ->
+                        Toast.makeText(
+                                context,
+                                "PDF salvo em Downloads: " + finalSafeName,
+                                Toast.LENGTH_LONG
+                        ).show()
+                );
+
             } catch (Exception e) {
-                error(e.toString());
+                error(e.getMessage() == null ? e.toString() : e.getMessage());
             }
         }
 
         @JavascriptInterface
         public void error(String message) {
-            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
-            main.post(() -> Toast.makeText(context, "Não foi possível salvar o PDF.", Toast.LENGTH_LONG).show());
+            android.os.Handler main =
+                    new android.os.Handler(
+                            android.os.Looper.getMainLooper()
+                    );
+
+            main.post(() ->
+                    Toast.makeText(
+                            context,
+                            "Não foi possível salvar o PDF.",
+                            Toast.LENGTH_LONG
+                    ).show()
+            );
         }
     }
 
     private boolean handleUrl(Uri uri) {
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
-        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
+        String scheme =
+                uri.getScheme() == null
+                        ? ""
+                        : uri.getScheme().toLowerCase();
 
-        if (scheme.equals("blob")) {
-            if (webView != null) {
-                String encoded = Base64.encodeToString(
-                        uri.toString().getBytes(StandardCharsets.UTF_8),
-                        Base64.NO_WRAP
-                );
-                String js = "(function(){var u=decodeURIComponent(escape(atob('" + encoded + "')));" +
-                        "if(window.__zero79SaveBlob){window.__zero79SaveBlob(u,'ZERO79.pdf');}" +
-                        "else{AndroidPdfBridge.error('Bridge do PDF não foi carregado.');}})()";
-                webView.evaluateJavascript(js, null);
-            }
-            return true;
-        }
+        String host =
+                uri.getHost() == null
+                        ? ""
+                        : uri.getHost().toLowerCase();
 
         if (scheme.equals("http") || scheme.equals("https")) {
-            if (host.equals("zero79.netlify.app") || host.endsWith("firebaseapp.com") ||
-                    host.endsWith("googleapis.com") || host.endsWith("gstatic.com")) {
+            if (host.equals("zero79.netlify.app")
+                    || host.endsWith("firebaseapp.com")
+                    || host.endsWith("googleapis.com")
+                    || host.endsWith("gstatic.com")) {
                 return false;
             }
+
             openExternal(uri);
             return true;
         }
 
-        if (scheme.equals("mailto") || scheme.equals("tel") || scheme.equals("sms") ||
-                scheme.equals("whatsapp") || scheme.equals("intent")) {
+        if (scheme.equals("mailto")
+                || scheme.equals("tel")
+                || scheme.equals("sms")
+                || scheme.equals("whatsapp")
+                || scheme.equals("intent")) {
+
             openExternal(uri);
             return true;
         }
+
         return false;
     }
 
@@ -317,17 +461,37 @@ main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + finalSafeNa
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, uri));
         } catch (Exception e) {
-            Toast.makeText(this, "Não foi possível abrir este link.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                    this,
+                    "Não foi possível abrir este link.",
+                    Toast.LENGTH_SHORT
+            ).show();
         }
     }
 
     private boolean isOnline() {
-        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm == null) return false;
+        ConnectivityManager cm =
+                (ConnectivityManager) getSystemService(
+                        Context.CONNECTIVITY_SERVICE
+                );
+
+        if (cm == null) {
+            return false;
+        }
+
         Network network = cm.getActiveNetwork();
-        if (network == null) return false;
-        NetworkCapabilities capabilities = cm.getNetworkCapabilities(network);
-        return capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+
+        if (network == null) {
+            return false;
+        }
+
+        NetworkCapabilities capabilities =
+                cm.getNetworkCapabilities(network);
+
+        return capabilities != null
+                && capabilities.hasCapability(
+                        NetworkCapabilities.NET_CAPABILITY_INTERNET
+                );
     }
 
     @Override
@@ -340,10 +504,22 @@ main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + finalSafeNa
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    protected void onActivityResult(
+            int requestCode,
+            int resultCode,
+            Intent data) {
+
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == FILE_CHOOSER_REQUEST && filePathCallback != null) {
-            Uri[] results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+
+        if (requestCode == FILE_CHOOSER_REQUEST
+                && filePathCallback != null) {
+
+            Uri[] results =
+                    WebChromeClient.FileChooserParams.parseResult(
+                            resultCode,
+                            data
+                    );
+
             filePathCallback.onReceiveValue(results);
             filePathCallback = null;
         }
@@ -351,7 +527,24 @@ main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + finalSafeNa
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
-        webView.saveState(outState);
+        if (webView != null) {
+            webView.saveState(outState);
+        }
+
         super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (webView != null) {
+            webView.stopLoading();
+            webView.loadUrl("about:blank");
+            webView.clearHistory();
+            webView.removeAllViews();
+            webView.destroy();
+            webView = null;
+        }
+
+        super.onDestroy();
     }
 }
