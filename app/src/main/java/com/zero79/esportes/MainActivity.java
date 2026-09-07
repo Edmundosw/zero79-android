@@ -12,10 +12,12 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.MediaStore;
-import android.graphics.Color;
-import android.graphics.pdf.PdfDocument;
-import android.view.View;
+import android.os.CancellationSignal;
+import android.os.ParcelFileDescriptor;
+import android.print.PageRange;
+import android.print.PrintAttributes;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintManager;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
@@ -27,48 +29,28 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 
 public class MainActivity extends Activity {
-
-    private static final String HOME_URL =
-            "https://zero79.netlify.app/";
-
+    private static final String HOME_URL = "https://zero79.netlify.app/";
     private static final int FILE_CHOOSER_REQUEST = 1001;
 
     private WebView webView;
-
     private ValueCallback<Uri[]> filePathCallback;
 
-    private File pdfTempFile;
-
     private boolean pdfPrinting = false;
-
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        /*
-         * Permite que o WebView seja desenhado além da área visível.
-         */
+        // Permite que o WebView seja desenhado além da área visível, necessário
+        // para transformar o documento completo em PDF.
         WebView.enableSlowWholeDocumentDraw();
 
         webView = new WebView(this);
-
         setContentView(webView);
 
-
-        /*
-         * CONFIGURAÇÕES DO WEBVIEW
-         */
-
         WebSettings settings = webView.getSettings();
-
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
@@ -79,1449 +61,396 @@ public class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            settings.setMixedContentMode(
-                    WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            );
-        }
-
-
-        /*
-         * COOKIES / FIREBASE
-         */
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
         CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            CookieManager.getInstance()
-                    .setAcceptThirdPartyCookies(webView, true);
-        }
-
-
-        /*
-         * PONTE JAVASCRIPT -> ANDROID
-         */
-
-        webView.addJavascriptInterface(
-                new PdfBridge(),
-                "AndroidPdfBridge"
-        );
-
-
-        /*
-         * NAVEGAÇÃO
-         */
+        webView.addJavascriptInterface(new PdfBridge(), "AndroidPdfBridge");
 
         webView.setWebViewClient(new WebViewClient() {
-
             @Override
-            public boolean shouldOverrideUrlLoading(
-                    WebView view,
-                    WebResourceRequest request
-            ) {
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return handleUrl(request.getUrl());
             }
 
-
             @Override
-            public boolean shouldOverrideUrlLoading(
-                    WebView view,
-                    String url
-            ) {
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 return handleUrl(Uri.parse(url));
             }
 
-
             @Override
-            public void onPageFinished(
-                    WebView view,
-                    String url
-            ) {
+            public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-
-                /*
-                 * Instala a interceptação do PDF depois
-                 * que o site estiver carregado.
-                 */
                 installNativePdfButton();
             }
         });
 
-
-        /*
-         * UPLOAD DE ARQUIVOS
-         */
-
         webView.setWebChromeClient(new WebChromeClient() {
-
             @Override
-            public boolean onShowFileChooser(
-                    WebView webView,
-                    ValueCallback<Uri[]> filePathCallback,
-                    FileChooserParams fileChooserParams
-            ) {
-
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback,
+                                             FileChooserParams fileChooserParams) {
                 if (MainActivity.this.filePathCallback != null) {
-                    MainActivity.this.filePathCallback
-                            .onReceiveValue(null);
+                    MainActivity.this.filePathCallback.onReceiveValue(null);
                 }
-
-                MainActivity.this.filePathCallback =
-                        filePathCallback;
-
+                MainActivity.this.filePathCallback = filePathCallback;
                 try {
-
-                    Intent intent =
-                            fileChooserParams.createIntent();
-
-                    startActivityForResult(
-                            intent,
-                            FILE_CHOOSER_REQUEST
-                    );
-
+                    Intent intent = fileChooserParams.createIntent();
+                    startActivityForResult(intent, FILE_CHOOSER_REQUEST);
                     return true;
-
                 } catch (ActivityNotFoundException e) {
-
                     MainActivity.this.filePathCallback = null;
-
-                    Toast.makeText(
-                            MainActivity.this,
+                    Toast.makeText(MainActivity.this,
                             "Não foi possível abrir o seletor de arquivos.",
-                            Toast.LENGTH_SHORT
-                    ).show();
-
+                            Toast.LENGTH_SHORT).show();
                     return false;
                 }
             }
         });
 
-
-        /*
-         * DOWNLOADS
-         */
-
-        webView.setDownloadListener(
-                new DownloadListener() {
-
-                    @Override
-                    public void onDownloadStart(
-                            String url,
-                            String userAgent,
-                            String contentDisposition,
-                            String mimetype,
-                            long contentLength
-                    ) {
-
-                        try {
-
-                            android.app.DownloadManager.Request request =
-                                    new android.app.DownloadManager.Request(
-                                            Uri.parse(url)
-                                    );
-
-                            request.setMimeType(mimetype);
-
-                            request.addRequestHeader(
-                                    "User-Agent",
-                                    userAgent
-                            );
-
-                            request.setNotificationVisibility(
-                                    android.app.DownloadManager.Request
-                                            .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                            );
-
-                            request.setDestinationInExternalPublicDir(
-                                    Environment.DIRECTORY_DOWNLOADS,
-                                    "ZERO79_arquivo"
-                            );
-
-                            android.app.DownloadManager dm =
-                                    (android.app.DownloadManager)
-                                            getSystemService(
-                                                    DOWNLOAD_SERVICE
-                                            );
-
-                            dm.enqueue(request);
-
-                            Toast.makeText(
-                                    MainActivity.this,
-                                    "Download iniciado.",
-                                    Toast.LENGTH_SHORT
-                            ).show();
-
-                        } catch (Exception e) {
-
-                            openExternal(Uri.parse(url));
-                        }
-                    }
+        webView.setDownloadListener(new DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition,
+                                        String mimetype, long contentLength) {
+                try {
+                    android.app.DownloadManager.Request request =
+                            new android.app.DownloadManager.Request(Uri.parse(url));
+                    request.setMimeType(mimetype);
+                    request.addRequestHeader("User-Agent", userAgent);
+                    request.setNotificationVisibility(
+                            android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                    request.setDestinationInExternalPublicDir(
+                            Environment.DIRECTORY_DOWNLOADS, "ZERO79_arquivo");
+                    android.app.DownloadManager dm =
+                            (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                    dm.enqueue(request);
+                    Toast.makeText(MainActivity.this,
+                            "Download iniciado.", Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    openExternal(Uri.parse(url));
                 }
-        );
-
-
-        /*
-         * INTERNET
-         */
+            }
+        });
 
         if (!isOnline()) {
-
-            Toast.makeText(
-                    this,
+            Toast.makeText(this,
                     "Sem conexão com a internet. O ZERO79 precisa estar online para acessar o Firebase.",
-                    Toast.LENGTH_LONG
-            ).show();
+                    Toast.LENGTH_LONG).show();
         }
 
-
-        /*
-         * CARREGA O SITE
-         */
-
         if (savedInstanceState == null) {
-
             webView.loadUrl(HOME_URL);
-
         } else {
-
             webView.restoreState(savedInstanceState);
         }
     }
 
-
-    /*
-     * ============================================================
-     * INTERCEPTAÇÃO DO SALVAR EM PDF
-     * ============================================================
+    /**
+     * Substitui SOMENTE o botão de salvar o documento de liberação.
+     * A seleção dos atletas continua sendo feita pelo próprio site.
      */
-
     private void installNativePdfButton() {
-
-        if (webView == null) {
-            return;
-        }
-
+        if (webView == null) return;
 
         /*
-         * Não acessamos getAtletasOrdenados() diretamente.
+         * IMPORTANTE:
+         * getAtletasOrdenados() e getAcompanhantesOrdenados() pertencem ao
+         * escopo do <script type="module"> do site e, portanto, NÃO ficam
+         * disponíveis diretamente para JavaScript injetado pelo WebView.
          *
-         * A própria função salvarPDF() do site verifica
-         * quais atletas estão selecionados.
+         * A versão anterior tentava acessar essas funções diretamente e por
+         * isso sempre enxergava 0 selecionados.
          *
-         * Nós interceptamos somente o html2pdf().save().
+         * Aqui mantemos a função original salvarPDF() do site. Ela própria
+         * verifica quais atletas estão selecionados. Interceptamos apenas
+         * html2pdf() durante essa chamada: quando o site chega ao ponto em
+         * que faria a conversão para PDF, chamamos a ponte nativa Android.
          */
+        String js = "javascript:(function(){" +
+                "if(window.__zero79NativePdfInstalled)return;" +
+                "if(typeof window.salvarPDF!=='function')return;" +
+                "var originalSalvarPDF=window.salvarPDF;" +
+                "var originalHtml2pdf=window.html2pdf;" +
+                "window.__zero79OriginalSalvarPDF=originalSalvarPDF;" +
+                "window.__zero79OriginalHtml2pdf=originalHtml2pdf;" +
+                "window.salvarPDF=function(){" +
+                    "try{" +
+                        "window.html2pdf=function(){" +
+                            "var api={};" +
+                            "api.set=function(){return api;};" +
+                            "api.from=function(){return api;};" +
+                            "api.save=function(){" +
+                                "if(window.AndroidPdfBridge){window.AndroidPdfBridge.printOfficialPdf('Liberacao_Acesso_Rio.pdf');}" +
+                                "else{alert('Ponte Android não disponível.');}" +
+                                "return api;" +
+                            "};" +
+                            "return api;" +
+                        "};" +
+                        "originalSalvarPDF();" +
+                    "}catch(e){alert('Erro ao preparar o PDF: ' + e.message);}" +
+                    "finally{" +
+                        "window.html2pdf=originalHtml2pdf;" +
+                    "}" +
+                "};" +
+                "window.__zero79NativePdfInstalled=true;" +
+                "}())";
 
-        String js =
-                "javascript:(function(){"
-
-                        + "if(window.__zero79NativePdfInstalled)return;"
-
-                        + "if(typeof window.salvarPDF!=='function')return;"
-
-                        + "var originalSalvarPDF=window.salvarPDF;"
-
-                        + "var originalHtml2pdf=window.html2pdf;"
-
-                        + "window.__zero79OriginalSalvarPDF=originalSalvarPDF;"
-
-                        + "window.__zero79OriginalHtml2pdf=originalHtml2pdf;"
-
-                        + "window.salvarPDF=function(){"
-
-                        + "try{"
-
-                        + "window.html2pdf=function(){"
-
-                        + "var api={};"
-
-                        + "api.set=function(){return api;};"
-
-                        + "api.from=function(){return api;};"
-
-                        + "api.save=function(){"
-
-                        + "if(window.AndroidPdfBridge){"
-
-                        + "window.AndroidPdfBridge.printOfficialPdf("
-
-                        + "'Liberacao_Acesso_Rio.pdf'"
-
-                        + ");"
-
-                        + "}else{"
-
-                        + "alert('Ponte Android não disponível.');"
-
-                        + "}"
-
-                        + "return api;"
-
-                        + "};"
-
-                        + "return api;"
-
-                        + "};"
-
-                        + "originalSalvarPDF();"
-
-                        + "}catch(e){"
-
-                        + "alert('Erro ao preparar o PDF: '+e.message);"
-
-                        + "}finally{"
-
-                        + "window.html2pdf=originalHtml2pdf;"
-
-                        + "}"
-
-                        + "};"
-
-                        + "window.__zero79NativePdfInstalled=true;"
-
-                        + "}())";
-
-
-        webView.evaluateJavascript(
-                js,
-                null
-        );
+        webView.evaluateJavascript(js, null);
     }
-
-
-    /*
-     * ============================================================
-     * PREPARA O DOCUMENTO
-     * ============================================================
+    /**
+     * Prepara somente o conteúdo do documento oficial para a impressão.
+     *
+     * IMPORTANTE: não alteramos o tamanho/measure/layout do WebView.
+     * Isso evita que a interface do aplicativo fique "espremida" depois do PDF.
      */
-
-    private void preparePageForPrint(
-            final String fileName
-    ) {
-
+    private void preparePageForPrint(final String fileName) {
         if (webView == null) {
-
-            showPdfError(
-                    "WebView não disponível."
-            );
-
+            showPdfError("WebView não disponível.");
             return;
         }
 
+        String js = "(function(){" +
+                "var doc=document.getElementById('documento-oficial');" +
+                "if(!doc){if(window.AndroidPdfBridge)AndroidPdfBridge.printError('Documento oficial não encontrado.');return false;}" +
+                "if(document.getElementById('zero79-print-style'))document.getElementById('zero79-print-style').remove();" +
+                "var style=document.createElement('style');" +
+                "style.id='zero79-print-style';" +
+                "style.innerHTML=\"@page{size:A4 portrait;margin:0;}\"+" +
+                "\"@media print{html,body{margin:0!important;padding:0!important;background:#fff!important;}#documento-oficial{display:block!important;visibility:visible!important;width:210mm!important;max-width:210mm!important;min-height:297mm!important;margin:0!important;box-shadow:none!important;border:0!important;background:#fff!important;}#documento-oficial *{visibility:visible!important;}}\";" +
+                "document.head.appendChild(style);" +
+                "var hidden=[];" +
+                "var node=doc;" +
+                "while(node&&node!==document.body){" +
+                    "var parent=node.parentElement;" +
+                    "if(!parent)break;" +
+                    "for(var i=0;i<parent.children.length;i++){" +
+                        "var sibling=parent.children[i];" +
+                        "if(sibling!==node){hidden.push({el:sibling,display:sibling.style.display,visibility:sibling.style.visibility});sibling.style.display='none';}" +
+                    "}" +
+                    "node=parent;" +
+                "}" +
+                "window.__zero79HiddenElements=hidden;" +
+                "document.body.style.background='#fff';" +
+                "void doc.offsetHeight;" +
+                "return true;" +
+                "})()";
 
-        String js =
-                "(function(){"
+        webView.evaluateJavascript(js, value -> {
+            if (value == null || "false".equals(value)) {
+                showPdfError("Não foi possível preparar o documento para PDF.");
+                return;
+            }
+            webView.postDelayed(() -> startNativePrint(fileName), 250);
+        });
+    }
 
-                        + "var doc=document.getElementById('documento-oficial');"
+    /**
+     * Usa o mecanismo oficial de impressão do Android para converter o WebView
+     * em PDF. O próprio Android cuida de layout, paginação e escrita do arquivo.
+     *
+     * O usuário verá a tela de impressão e poderá escolher "Salvar como PDF".
+     */
+    private void startNativePrint(final String fileName) {
+        if (webView == null) {
+            finishPrintPreparation();
+            showPdfError("WebView não disponível.");
+            return;
+        }
 
-                        + "if(!doc){"
+        try {
+            PrintManager printManager =
+                    (PrintManager) getSystemService(Context.PRINT_SERVICE);
 
-                        + "if(window.AndroidPdfBridge)"
+            if (printManager == null) {
+                throw new Exception("Serviço de impressão do Android não disponível.");
+            }
 
-                        + "AndroidPdfBridge.printError("
+            final PrintDocumentAdapter originalAdapter =
+                    webView.createPrintDocumentAdapter(fileName);
 
-                        + "'Documento oficial não encontrado.'"
-
-                        + ");"
-
-                        + "return false;"
-
-                        + "}"
-
-                        + "var oldStyle=document.getElementById('zero79-print-style');"
-
-                        + "if(oldStyle)oldStyle.remove();"
-
-                        + "var style=document.createElement('style');"
-
-                        + "style.id='zero79-print-style';"
-
-                        + "style.innerHTML="
-
-                        + "\"html,body{margin:0!important;padding:0!important;background:#fff!important;}\"+"
-
-                        + "\"#documento-oficial{display:block!important;visibility:visible!important;width:210mm!important;min-height:297mm!important;margin:0!important;box-shadow:none!important;border:0!important;background:#fff!important;}\"+"
-
-                        + "\"#documento-oficial *{visibility:visible!important;}\";"
-
-                        + "document.head.appendChild(style);"
-
-                        + "var hidden=[];"
-
-                        + "var node=doc;"
-
-                        + "while(node&&node!==document.body){"
-
-                        + "var parent=node.parentElement;"
-
-                        + "if(!parent)break;"
-
-                        + "for(var i=0;i<parent.children.length;i++){"
-
-                        + "var sibling=parent.children[i];"
-
-                        + "if(sibling!==node){"
-
-                        + "hidden.push({el:sibling,display:sibling.style.display});"
-
-                        + "sibling.style.display='none';"
-
-                        + "}"
-
-                        + "}"
-
-                        + "node=parent;"
-
-                        + "}"
-
-                        + "window.__zero79HiddenElements=hidden;"
-
-                        + "document.body.style.background='#fff';"
-
-                        + "void doc.offsetHeight;"
-
-                        + "return true;"
-
-                        + "})()";
-
-
-        webView.evaluateJavascript(
-                js,
-                value -> {
-
-                    if (value == null ||
-                            "false".equals(value)) {
-
-                        showPdfError(
-                                "Não foi possível preparar o documento para PDF."
-                        );
-
-                        return;
-                    }
-
-
-                    webView.postDelayed(
-                            () -> createNativePdf(fileName),
-                            500
-                    );
+            PrintDocumentAdapter restoringAdapter = new PrintDocumentAdapter() {
+                @Override
+                public void onStart() {
+                    originalAdapter.onStart();
                 }
-        );
-    }
 
+                @Override
+                public void onLayout(
+                        PrintAttributes oldAttributes,
+                        PrintAttributes newAttributes,
+                        CancellationSignal cancellationSignal,
+                        LayoutResultCallback callback,
+                        Bundle extras) {
+                    originalAdapter.onLayout(
+                            oldAttributes,
+                            newAttributes,
+                            cancellationSignal,
+                            callback,
+                            extras);
+                }
 
-    /*
-     * ============================================================
-     * GERA O PDF
-     * ============================================================
-     */
+                @Override
+                public void onWrite(
+                        PageRange[] pages,
+                        ParcelFileDescriptor destination,
+                        CancellationSignal cancellationSignal,
+                        WriteResultCallback callback) {
+                    originalAdapter.onWrite(
+                            pages,
+                            destination,
+                            cancellationSignal,
+                            callback);
+                }
 
-    private void createNativePdf(
-            final String fileName
-    ) {
-
-        if (pdfPrinting) {
-
-            showPdfError(
-                    "Já existe uma geração de PDF em andamento."
-            );
-
-            return;
-        }
-
-
-        pdfPrinting = true;
-
-
-        /*
-         * Obtém largura e altura do documento.
-         */
-
-        final String js =
-                "(function(){"
-
-                        + "var d=document.getElementById('documento-oficial');"
-
-                        + "if(!d)return 'ERROR';"
-
-                        + "var r=d.getBoundingClientRect();"
-
-                        + "var w=Math.ceil(Math.max("
-
-                        + "d.scrollWidth,"
-
-                        + "d.offsetWidth,"
-
-                        + "r.width"
-
-                        + "));"
-
-                        + "var h=Math.ceil(Math.max("
-
-                        + "d.scrollHeight,"
-
-                        + "d.offsetHeight,"
-
-                        + "r.height"
-
-                        + "));"
-
-                        + "return String(w)+'|'+String(h);"
-
-                        + "})()";
-
-
-        webView.evaluateJavascript(
-                js,
-                value -> {
-
+                @Override
+                public void onFinish() {
                     try {
-
-                        if (value == null ||
-                                "null".equals(value) ||
-                                value.contains("ERROR")) {
-
-                            throw new Exception(
-                                    "Documento oficial não encontrado."
-                            );
-                        }
-
-
-                        /*
-                         * ==================================================
-                         * CORREÇÃO IMPORTANTE
-                         * ==================================================
-                         *
-                         * evaluateJavascript retorna uma string JSON.
-                         *
-                         * Exemplo:
-                         *
-                         * "443|1130"
-                         *
-                         * Precisamos retirar as aspas externas.
-                         */
-
-                        String dimensions = value.trim();
-
-
-                        if (dimensions.startsWith("\"") &&
-                                dimensions.endsWith("\"")) {
-
-                            dimensions =
-                                    dimensions.substring(
-                                            1,
-                                            dimensions.length() - 1
-                                    );
-                        }
-
-
-                        /*
-                         * Desfaz possíveis escapes.
-                         */
-
-                        dimensions =
-                                dimensions.replace(
-                                        "\\\"",
-                                        "\""
-                                );
-
-
-                        /*
-                         * Agora esperamos:
-                         *
-                         * 443|1130
-                         */
-
-                        String[] parts =
-                                dimensions.split(
-                                        "\\|"
-                                );
-
-
-                        if (parts.length != 2) {
-
-                            throw new Exception(
-                                    "Dimensões inválidas retornadas pelo documento: " +
-                                            dimensions
-                            );
-                        }
-
-
-                        int contentWidth =
-                                Integer.parseInt(
-                                        parts[0].trim()
-                                );
-
-
-                        int contentHeight =
-                                Integer.parseInt(
-                                        parts[1].trim()
-                                );
-
-
-                        if (contentWidth <= 0 ||
-                                contentHeight <= 0) {
-
-                            throw new Exception(
-                                    "Dimensões do documento inválidas."
-                            );
-                        }
-
-
-                        /*
-                         * ==================================================
-                         * A4
-                         * ==================================================
-                         *
-                         * 595 x 842 pontos.
-                         */
-
-                        final int pageWidth = 595;
-
-                        final int pageHeight = 842;
-
-
-                        /*
-                         * Escala para caber na largura do A4.
-                         *
-                         * Mantemos a largura proporcional.
-                         */
-
-                        final float scale =
-                                (float) pageWidth /
-                                        (float) contentWidth;
-
-
-                        int renderedHeight =
-                                Math.max(
-                                        1,
-                                        Math.round(
-                                                contentHeight *
-                                                        scale
-                                        )
-                                );
-
-
-                        /*
-                         * Mede o WebView com o tamanho real
-                         * do documento.
-                         */
-
-                        int widthSpec =
-                                View.MeasureSpec.makeMeasureSpec(
-                                        contentWidth,
-                                        View.MeasureSpec.EXACTLY
-                                );
-
-
-                        int heightSpec =
-                                View.MeasureSpec.makeMeasureSpec(
-                                        contentHeight,
-                                        View.MeasureSpec.EXACTLY
-                                );
-
-
-                        webView.measure(
-                                widthSpec,
-                                heightSpec
-                        );
-
-
-                        webView.layout(
-                                0,
-                                0,
-                                contentWidth,
-                                contentHeight
-                        );
-
-
-                        /*
-                         * Arquivo temporário.
-                         */
-
-                        pdfTempFile =
-                                File.createTempFile(
-                                        "zero79_",
-                                        ".pdf",
-                                        getCacheDir()
-                                );
-
-
-                        PdfDocument pdf =
-                                new PdfDocument();
-
-
-                        try {
-
-                            /*
-                             * Número de páginas.
-                             */
-
-                            int pageCount =
-                                    Math.max(
-                                            1,
-                                            (int) Math.ceil(
-                                                    (double) renderedHeight /
-                                                            (double) pageHeight
-                                            )
-                                    );
-
-
-                            for (
-                                    int pageNumber = 0;
-                                    pageNumber < pageCount;
-                                    pageNumber++
-                            ) {
-
-                                PdfDocument.PageInfo pageInfo =
-                                        new PdfDocument.PageInfo.Builder(
-                                                pageWidth,
-                                                pageHeight,
-                                                pageNumber + 1
-                                        ).create();
-
-
-                                PdfDocument.Page page =
-                                        pdf.startPage(
-                                                pageInfo
-                                        );
-
-
-                                android.graphics.Canvas canvas =
-                                        page.getCanvas();
-
-
-                                /*
-                                 * Fundo branco.
-                                 */
-
-                                canvas.drawColor(
-                                        Color.WHITE
-                                );
-
-
-                                canvas.save();
-
-
-                                /*
-                                 * Escala.
-                                 */
-
-                                canvas.scale(
-                                        scale,
-                                        scale
-                                );
-
-
-                                /*
-                                 * Deslocamento vertical
-                                 * para cada página.
-                                 */
-
-                                float verticalOffset =
-                                        (
-                                                pageNumber *
-                                                        pageHeight
-                                        ) / scale;
-
-
-                                canvas.translate(
-                                        0,
-                                        -verticalOffset
-                                );
-
-
-                                /*
-                                 * Desenha o WebView.
-                                 */
-
-                                webView.draw(
-                                        canvas
-                                );
-
-
-                                canvas.restore();
-
-
-                                pdf.finishPage(
-                                        page
-                                );
-                            }
-
-
-                            /*
-                             * Grava o PDF.
-                             */
-
-                            try (
-                                    FileOutputStream out =
-                                            new FileOutputStream(
-                                                    pdfTempFile
-                                            )
-                            ) {
-
-                                pdf.writeTo(out);
-                            }
-
-
-                        } finally {
-
-                            pdf.close();
-                        }
-
-
-                        /*
-                         * Verificação.
-                         */
-
-                        if (!pdfTempFile.exists() ||
-                                pdfTempFile.length() == 0) {
-
-                            throw new Exception(
-                                    "O arquivo PDF foi gerado vazio."
-                            );
-                        }
-
-
-                        /*
-                         * Salva em Downloads.
-                         */
-
-                        savePdfToDownloads(
-                                pdfTempFile,
-                                fileName
-                        );
-
-
-                        /*
-                         * Restaura a página.
-                         */
-
-                        restorePageAfterPrint();
-
-
-                        Toast.makeText(
-                                MainActivity.this,
-                                "PDF salvo em Downloads/" +
-                                        fileName,
-                                Toast.LENGTH_LONG
-                        ).show();
-
-
-                        deleteTempPdf();
-
-
-                        pdfPrinting = false;
-
-
-                    } catch (Exception e) {
-
-                        finishPdfError(
-                                "Erro ao gerar PDF: " +
-                                        e.getMessage()
-                        );
+                        originalAdapter.onFinish();
+                    } finally {
+                        finishPrintPreparation();
                     }
                 }
-        );
-    }
+            };
 
+            PrintAttributes attributes = new PrintAttributes.Builder()
+                    .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                    .setResolution(new PrintAttributes.Resolution(
+                            "zero79_pdf", "ZERO79 PDF", 300, 300))
+                    .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                    .build();
 
-    /*
-     * ============================================================
-     * SALVAR PDF EM DOWNLOADS
-     * ============================================================
-     */
+            pdfPrinting = true;
+            printManager.print(fileName, restoringAdapter, attributes);
 
-    private void savePdfToDownloads(
-            File source,
-            String fileName
-    ) throws Exception {
+            Toast.makeText(this,
+                    "Documento aberto para impressão. Escolha 'Salvar como PDF'.",
+                    Toast.LENGTH_LONG).show();
 
-
-        if (Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.Q) {
-
-
-            ContentValues values =
-                    new ContentValues();
-
-
-            values.put(
-                    MediaStore.Downloads.DISPLAY_NAME,
-                    fileName
-            );
-
-
-            values.put(
-                    MediaStore.Downloads.MIME_TYPE,
-                    "application/pdf"
-            );
-
-
-            values.put(
-                    MediaStore.Downloads.RELATIVE_PATH,
-                    Environment.DIRECTORY_DOWNLOADS
-            );
-
-
-            values.put(
-                    MediaStore.Downloads.IS_PENDING,
-                    1
-            );
-
-
-            Uri uri =
-                    getContentResolver().insert(
-                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                            values
-                    );
-
-
-            if (uri == null) {
-
-                throw new Exception(
-                        "Não foi possível criar o arquivo em Downloads."
-                );
-            }
-
-
-            try {
-
-                try (
-                        InputStream in =
-                                new FileInputStream(source);
-
-                        OutputStream out =
-                                getContentResolver()
-                                        .openOutputStream(uri)
-                ) {
-
-                    if (out == null) {
-
-                        throw new Exception(
-                                "Não foi possível abrir o destino do PDF."
-                        );
-                    }
-
-
-                    copy(
-                            in,
-                            out
-                    );
-                }
-
-
-                ContentValues done =
-                        new ContentValues();
-
-
-                done.put(
-                        MediaStore.Downloads.IS_PENDING,
-                        0
-                );
-
-
-                getContentResolver().update(
-                        uri,
-                        done,
-                        null,
-                        null
-                );
-
-
-            } catch (Exception e) {
-
-                getContentResolver().delete(
-                        uri,
-                        null,
-                        null
-                );
-
-                throw e;
-            }
-
-
-        } else {
-
-
-            File dir =
-                    getExternalFilesDir(
-                            Environment.DIRECTORY_DOWNLOADS
-                    );
-
-
-            if (dir == null) {
-
-                throw new Exception(
-                        "Pasta de Downloads indisponível."
-                );
-            }
-
-
-            if (!dir.exists() &&
-                    !dir.mkdirs()) {
-
-                throw new Exception(
-                        "Não foi possível criar a pasta de Downloads."
-                );
-            }
-
-
-            File destination =
-                    new File(
-                            dir,
-                            fileName
-                    );
-
-
-            try (
-                    InputStream in =
-                            new FileInputStream(source);
-
-                    OutputStream out =
-                            new FileOutputStream(destination)
-            ) {
-
-                copy(
-                        in,
-                        out
-                );
-            }
+        } catch (Exception e) {
+            finishPrintPreparation();
+            showPdfError("Erro ao abrir a impressão: " + e.getMessage());
         }
     }
 
-
-    /*
-     * ============================================================
-     * COPIAR ARQUIVO
-     * ============================================================
-     */
-
-    private void copy(
-            InputStream in,
-            OutputStream out
-    ) throws Exception {
-
-        byte[] buffer =
-                new byte[8192];
-
-        int read;
-
-        while (
-                (read = in.read(buffer)) != -1
-        ) {
-
-            out.write(
-                    buffer,
-                    0,
-                    read
-            );
-        }
-
-        out.flush();
-    }
-
-
-    /*
-     * ============================================================
-     * RESTAURAR PÁGINA
-     * ============================================================
-     */
-
-    private void restorePageAfterPrint() {
-
-        if (webView == null) {
-            return;
-        }
-
-
-        webView.post(
-                () -> webView.evaluateJavascript(
-
-                        "(function(){"
-
-                                + "var h=window.__zero79HiddenElements||[];"
-
-                                + "for(var i=0;i<h.length;i++){"
-
-                                + "if(h[i]&&h[i].el){"
-
-                                + "h[i].el.style.display=h[i].display||'';"
-
-                                + "}"
-
-                                + "}"
-
-                                + "window.__zero79HiddenElements=[];"
-
-                                + "var style=document.getElementById("
-
-                                + "'zero79-print-style'"
-
-                                + ");"
-
-                                + "if(style)style.remove();"
-
-                                + "document.body.style.background='';"
-
-                                + "})()",
-
-                        null
-                )
-        );
-    }
-
-
-    /*
-     * ============================================================
-     * ERRO
-     * ============================================================
-     */
-
-    private void finishPdfError(
-            String message
-    ) {
-
-        restorePageAfterPrint();
-
-        deleteTempPdf();
-
+    /** Restaura a página depois que o sistema de impressão terminar. */
+    private void finishPrintPreparation() {
         pdfPrinting = false;
-
-        showPdfError(
-                message
-        );
+        restorePageAfterPrint();
     }
 
-
-    private void showPdfError(
-            String message
-    ) {
-
-        runOnUiThread(
-                () -> Toast.makeText(
-                        MainActivity.this,
-                        message,
-                        Toast.LENGTH_LONG
-                ).show()
-        );
+    private void showPdfError(String message) {
+        runOnUiThread(() -> Toast.makeText(
+                MainActivity.this,
+                message,
+                Toast.LENGTH_LONG).show());
     }
 
-
-    /*
-     * ============================================================
-     * EXCLUI TEMPORÁRIO
-     * ============================================================
+    /**
+     * Restaura exatamente os elementos que foram escondidos para a impressão.
+     * Não mexemos em measure/layout do WebView, portanto a interface não fica
+     * deformada depois do PDF.
      */
+    private void restorePageAfterPrint() {
+        if (webView == null) return;
 
-    private void deleteTempPdf() {
-
-        if (pdfTempFile != null) {
-
-            try {
-
-                pdfTempFile.delete();
-
-            } catch (Exception ignored) {
-            }
-
-            pdfTempFile = null;
-        }
+        webView.post(() -> webView.evaluateJavascript(
+                "(function(){" +
+                        "var h=window.__zero79HiddenElements||[];" +
+                        "for(var i=0;i<h.length;i++){if(h[i]&&h[i].el){h[i].el.style.display=h[i].display||'';h[i].el.style.visibility=h[i].visibility||'';}}" +
+                        "window.__zero79HiddenElements=[];" +
+                        "var style=document.getElementById('zero79-print-style');" +
+                        "if(style)style.remove();" +
+                        "document.body.style.background='';" +
+                        "})()",
+                null));
     }
 
+    private boolean handleUrl(Uri uri) {
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
+        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
 
-    /*
-     * ============================================================
-     * LINKS
-     * ============================================================
-     */
-
-    private boolean handleUrl(
-            Uri uri
-    ) {
-
-        String scheme =
-                uri.getScheme() == null
-                        ? ""
-                        : uri.getScheme().toLowerCase();
-
-
-        String host =
-                uri.getHost() == null
-                        ? ""
-                        : uri.getHost().toLowerCase();
-
-
-        if (
-                scheme.equals("http") ||
-                scheme.equals("https")
-        ) {
-
-
-            if (
-                    host.equals(
-                            "zero79.netlify.app"
-                    )
-
-                    ||
-
-                    host.endsWith(
-                            "firebaseapp.com"
-                    )
-
-                    ||
-
-                    host.endsWith(
-                            "googleapis.com"
-                    )
-
-                    ||
-
-                    host.endsWith(
-                            "gstatic.com"
-                    )
-            ) {
-
+        if (scheme.equals("http") || scheme.equals("https")) {
+            if (host.equals("zero79.netlify.app") ||
+                    host.endsWith("firebaseapp.com") ||
+                    host.endsWith("googleapis.com") ||
+                    host.endsWith("gstatic.com")) {
                 return false;
             }
-
-
             openExternal(uri);
-
             return true;
         }
 
-
-        if (
-                scheme.equals("mailto") ||
-                scheme.equals("tel") ||
-                scheme.equals("sms") ||
-                scheme.equals("whatsapp") ||
-                scheme.equals("intent")
-        ) {
-
+        if (scheme.equals("mailto") || scheme.equals("tel") || scheme.equals("sms") ||
+                scheme.equals("whatsapp") || scheme.equals("intent")) {
             openExternal(uri);
-
             return true;
         }
-
-
         return false;
     }
 
-
-    /*
-     * ============================================================
-     * LINK EXTERNO
-     * ============================================================
-     */
-
-    private void openExternal(
-            Uri uri
-    ) {
-
+    private void openExternal(Uri uri) {
         try {
-
-            startActivity(
-                    new Intent(
-                            Intent.ACTION_VIEW,
-                            uri
-                    )
-            );
-
+            startActivity(new Intent(Intent.ACTION_VIEW, uri));
         } catch (Exception e) {
-
-            Toast.makeText(
-                    this,
-                    "Não foi possível abrir este link.",
-                    Toast.LENGTH_SHORT
-            ).show();
+            Toast.makeText(this,
+                    "Não foi possível abrir este link.", Toast.LENGTH_SHORT).show();
         }
     }
-
-
-    /*
-     * ============================================================
-     * INTERNET
-     * ============================================================
-     */
 
     private boolean isOnline() {
-
         ConnectivityManager cm =
-                (ConnectivityManager)
-                        getSystemService(
-                                Context.CONNECTIVITY_SERVICE
-                        );
-
-
-        if (cm == null) {
-            return false;
-        }
-
-
-        Network network =
-                cm.getActiveNetwork();
-
-
-        if (network == null) {
-            return false;
-        }
-
-
-        NetworkCapabilities capabilities =
-                cm.getNetworkCapabilities(
-                        network
-                );
-
-
+                (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        Network network = cm.getActiveNetwork();
+        if (network == null) return false;
+        NetworkCapabilities capabilities = cm.getNetworkCapabilities(network);
         return capabilities != null &&
-                capabilities.hasCapability(
-                        NetworkCapabilities.NET_CAPABILITY_INTERNET
-                );
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
     }
-
-
-    /*
-     * ============================================================
-     * BOTÃO VOLTAR
-     * ============================================================
-     */
 
     @Override
     public void onBackPressed() {
-
-        if (
-                webView != null &&
-                webView.canGoBack()
-        ) {
-
+        if (webView != null && webView.canGoBack()) {
             webView.goBack();
-
         } else {
-
             super.onBackPressed();
         }
     }
 
-
-    /*
-     * ============================================================
-     * RESULTADO DO UPLOAD
-     * ============================================================
-     */
-
     @Override
-    protected void onActivityResult(
-            int requestCode,
-            int resultCode,
-            Intent data
-    ) {
-
-        super.onActivityResult(
-                requestCode,
-                resultCode,
-                data
-        );
-
-
-        if (
-                requestCode ==
-                        FILE_CHOOSER_REQUEST &&
-
-                filePathCallback != null
-        ) {
-
-
-            Uri[] results =
-                    WebChromeClient.FileChooserParams
-                            .parseResult(
-                                    resultCode,
-                                    data
-                            );
-
-
-            filePathCallback.onReceiveValue(
-                    results
-            );
-
-
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == FILE_CHOOSER_REQUEST && filePathCallback != null) {
+            Uri[] results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            filePathCallback.onReceiveValue(results);
             filePathCallback = null;
         }
     }
 
-
-    /*
-     * ============================================================
-     * SALVAR ESTADO
-     * ============================================================
-     */
-
     @Override
-    protected void onSaveInstanceState(
-            Bundle outState
-    ) {
-
-        if (webView != null) {
-
-            webView.saveState(
-                    outState
-            );
-        }
-
-
-        super.onSaveInstanceState(
-                outState
-        );
+    protected void onSaveInstanceState(Bundle outState) {
+        if (webView != null) webView.saveState(outState);
+        super.onSaveInstanceState(outState);
     }
 
-
-    /*
-     * ============================================================
-     * PONTE JAVASCRIPT -> ANDROID
-     * ============================================================
-     */
-
+    /** Ponte JavaScript -> Android. */
     private class PdfBridge {
-
-
         @JavascriptInterface
-        public void printOfficialPdf(
-                String fileName
-        ) {
-
-            runOnUiThread(
-                    () -> {
-
-                        if (pdfPrinting) {
-
-                            Toast.makeText(
-                                    MainActivity.this,
-                                    "Já existe uma geração de PDF em andamento.",
-                                    Toast.LENGTH_SHORT
-                            ).show();
-
-                            return;
-                        }
-
-
-                        preparePageForPrint(
-                                fileName
-                        );
-                    }
-            );
+        public void printOfficialPdf(String fileName) {
+            runOnUiThread(() -> {
+                if (pdfPrinting) {
+                    Toast.makeText(MainActivity.this,
+                            "Já existe uma geração de PDF em andamento.",
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                preparePageForPrint(fileName);
+            });
         }
 
-
         @JavascriptInterface
-        public void printError(
-                String message
-        ) {
-
-            runOnUiThread(
-                    () -> showPdfError(
-                            message
-                    )
-            );
+        public void printError(String message) {
+            runOnUiThread(() -> showPdfError(message));
         }
     }
 }
