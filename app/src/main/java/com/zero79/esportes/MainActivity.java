@@ -181,7 +181,8 @@ public class MainActivity extends Activity {
                     try (FileOutputStream out = new FileOutputStream(file)) { out.write(bytes); }
                 }
                 android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
-                main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + safeName, Toast.LENGTH_LONG).show());
+                final String finalSafeName = safeName;
+main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + finalSafeName, Toast.LENGTH_LONG).show());
             } catch (Exception e) {
                 error(e.toString());
             }
