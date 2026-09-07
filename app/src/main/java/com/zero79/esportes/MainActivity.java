@@ -16,11 +16,17 @@ import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
+import android.os.Build;
+import android.util.Base64;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 
 public class MainActivity extends Activity {
     private static final String HOME_URL = "https://zero79.netlify.app/";
@@ -52,7 +58,15 @@ public class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
+        webView.addJavascriptInterface(new PdfBridge(this), "AndroidPdfBridge");
+
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                injectPdfDownloadBridge(view);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return handleUrl(request.getUrl());
@@ -111,6 +125,72 @@ public class MainActivity extends Activity {
             webView.loadUrl(HOME_URL);
         } else {
             webView.restoreState(savedInstanceState);
+        }
+    }
+
+    private void injectPdfDownloadBridge(WebView view) {
+        String js = "javascript:(function(){" +
+                "if(window.__zero79PdfBridgeInstalled)return;window.__zero79PdfBridgeInstalled=true;" +
+                "var originalClick=HTMLAnchorElement.prototype.click;" +
+                "HTMLAnchorElement.prototype.click=function(){" +
+                "var a=this,h=a.href||'';" +
+                "if(h.indexOf('blob:')===0){" +
+                "fetch(h).then(function(r){return r.blob()}).then(function(b){" +
+                "var fr=new FileReader();fr.onloadend=function(){" +
+                "var x=fr.result||'',i=x.indexOf(',');" +
+                "AndroidPdfBridge.saveBase64(i>=0?x.substring(i+1):x,b.type||'application/pdf',a.download||'ZERO79.pdf');};" +
+                "fr.readAsDataURL(b);" +
+                "}).catch(function(e){AndroidPdfBridge.error(String(e));});return;" +
+                "}" +
+                "return originalClick.call(a);" +
+                "};" +
+                "})()";
+        view.evaluateJavascript(js, null);
+    }
+
+    private static class PdfBridge {
+        private final Context context;
+        PdfBridge(Context context) { this.context = context.getApplicationContext(); }
+
+        @JavascriptInterface
+        public void saveBase64(String base64, String mimeType, String fileName) {
+            try {
+                byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+                String safeName = (fileName == null || fileName.trim().isEmpty()) ? "ZERO79.pdf" : fileName.replaceAll("[\\/:*?\"<>|]", "_");
+                if (!safeName.toLowerCase().endsWith(".pdf") && "application/pdf".equalsIgnoreCase(mimeType)) safeName += ".pdf";
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    android.content.ContentValues values = new android.content.ContentValues();
+                    values.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName);
+                    values.put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType == null ? "application/pdf" : mimeType);
+                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
+                    Uri uri = context.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (uri == null) throw new IOException("Não foi possível criar o arquivo.");
+                    try (java.io.OutputStream out = context.getContentResolver().openOutputStream(uri)) {
+                        if (out == null) throw new IOException("Não foi possível abrir o arquivo.");
+                        out.write(bytes);
+                    }
+                    values.clear();
+                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
+                    context.getContentResolver().update(uri, values, null, null);
+                } else {
+                    File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                    if (dir == null) throw new IOException("Pasta de downloads indisponível.");
+                    if (!dir.exists() && !dir.mkdirs()) throw new IOException("Não foi possível criar a pasta.");
+                    File file = new File(dir, safeName);
+                    try (FileOutputStream out = new FileOutputStream(file)) { out.write(bytes); }
+                }
+                android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                main.post(() -> Toast.makeText(context, "PDF salvo em Downloads: " + safeName, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                error(e.toString());
+            }
+        }
+
+        @JavascriptInterface
+        public void error(String message) {
+            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+            main.post(() -> Toast.makeText(context, "Não foi possível salvar o PDF.", Toast.LENGTH_LONG).show());
         }
     }
 
